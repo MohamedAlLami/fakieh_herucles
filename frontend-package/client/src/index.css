@@ -4510,3 +4510,62 @@ main {
   color: #ffffff !important;
 }
 
+/* Pallet production report: simple grid with reliable contrast in both themes. */
+.pallet-report-table {
+  background-color: #0f172a;
+  color: #e2e8f0;
+}
+
+.pallet-report-table th,
+.pallet-report-table td {
+  border-color: #334155;
+}
+
+.pallet-report-table-head {
+  background-color: #637f12;
+}
+
+.pallet-report-table-head th {
+  color: #ffffff !important;
+}
+
+.pallet-report-table tbody tr:hover {
+  background-color: rgba(30, 41, 59, 0.7);
+}
+
+.pallet-report-total-row {
+  background-color: #334155;
+  color: #ffffff;
+}
+
+:root.light .pallet-report-table {
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+}
+
+:root.light .pallet-report-table th,
+:root.light .pallet-report-table td {
+  border-color: #cbd5e1 !important;
+}
+
+:root.light .pallet-report-table-head {
+  background-color: #718f16 !important;
+}
+
+:root.light .pallet-report-table-head th {
+  color: #ffffff !important;
+}
+
+:root.light .pallet-report-table tbody tr:nth-child(even) {
+  background-color: #f8fafc !important;
+}
+
+:root.light .pallet-report-table tbody tr:hover {
+  background-color: #eef5dc !important;
+}
+
+:root.light .pallet-report-total-row {
+  background-color: #e5e7eb !important;
+  color: #111827 !important;
+}
+

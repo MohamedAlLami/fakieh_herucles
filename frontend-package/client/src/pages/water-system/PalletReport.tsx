@@ -25,7 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { API_ENDPOINTS } from '@/config/api'
 import { usePolling } from '@/hooks/usePolling'
@@ -142,6 +142,8 @@ const validCode = (value?: number | null) => value != null && value !== 0
 const uniqueValues = (values: Array<number | null | undefined>) =>
   Array.from(new Set(values.filter(validCode) as number[]))
 
+const displayTrail = (values: number[]) => values.length ? values.join(' → ') : '—'
+
 const selectionMeaning = (selection?: number | null) => {
   if (selection === 3) return 'P3'
   if (selection === 4) return 'P4'
@@ -149,21 +151,6 @@ const selectionMeaning = (selection?: number | null) => {
   return '—'
 }
 
-function ValueTrail({ values }: { values: number[] }) {
-  if (!values.length) return <span className="text-slate-500">—</span>
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {values.map((value, index) => (
-        <span key={value} className="contents">
-          {index > 0 && <ArrowRight className="h-3 w-3 text-slate-500" />}
-          <Badge variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-cyan-300 light:text-cyan-700">
-            {value}
-          </Badge>
-        </span>
-      ))}
-    </div>
-  )
-}
 function KpiCard({ label, value, icon: Icon, accent }: {
   label: string
   value: string
@@ -171,11 +158,11 @@ function KpiCard({ label, value, icon: Icon, accent }: {
   accent: string
 }) {
   return (
-    <Card className="border-slate-700/50 bg-slate-900/70 light:border-gray-200 light:bg-white">
+    <Card className="border-border bg-card text-card-foreground">
       <CardContent className="flex items-center justify-between p-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-          <p className="mt-1 text-2xl font-bold text-slate-100 light:text-slate-900">{value}</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+          <p className="mt-1 text-2xl font-bold text-foreground">{value}</p>
         </div>
         <div className={`rounded-xl p-2.5 ${accent}`}><Icon className="h-5 w-5" /></div>
       </CardContent>
@@ -257,17 +244,17 @@ function HistoryPanel() {
         <KpiCard label="Total production" value={`${formatQuantity(summary?.total_product_kg ?? 0)} KG`} icon={Gauge} accent="bg-amber-500/10 text-amber-400" />
       </div>
 
-      <Card className="border-slate-700/50 bg-slate-900/70 light:border-gray-200 light:bg-white">
+      <Card className="border-border bg-card text-card-foreground">
         <CardContent className="flex flex-wrap items-end gap-3 p-4">
           <div className="min-w-36 space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Line</label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Line</label>
             <Select value={line} onValueChange={(value) => updateFilter(setLine, value)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{['ALL', 'P1', 'P2', 'P3', 'P4'].map((value) => <SelectItem key={value} value={value}>{value === 'ALL' ? 'All lines' : value}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div className="min-w-36 space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</label>
             <Select value={status} onValueChange={(value) => updateFilter(setStatus, value)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -278,17 +265,17 @@ function HistoryPanel() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start date & time</label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Start date & time</label>
             <Input type="datetime-local" step="60" value={startDate} onChange={(event) => updateFilter(setStartDate, event.target.value)} />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End date & time</label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">End date & time</label>
             <Input type="datetime-local" step="60" value={endDate} min={startDate || undefined} onChange={(event) => updateFilter(setEndDate, event.target.value)} />
           </div>
           <div className="min-w-52 flex-1 space-y-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Search</label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Search</label>
             <div className="relative">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input className="pl-9" placeholder="Order, source, destination…" value={search} onChange={(event) => updateFilter(setSearch, event.target.value)} />
             </div>
           </div>
@@ -300,17 +287,20 @@ function HistoryPanel() {
 
       {error && <Alert variant="destructive"><AlertCircle className="h-4 w-4" /><AlertDescription>{error}</AlertDescription></Alert>}
 
-      <Card className="overflow-hidden border-slate-700/50 bg-slate-900/70 light:border-gray-200 light:bg-white">
+      <Card className="overflow-hidden border-border bg-card text-card-foreground">
+        <div className="border-b border-border px-4 py-3 text-lg font-bold">Production information</div>
         <div className="max-h-[56vh] overflow-auto">
-          <Table>
-            <TableHeader className="sticky top-0 z-10 bg-slate-800 light:bg-slate-100">
+          <Table className="pallet-report-table min-w-[1120px] border-collapse">
+            <TableHeader className="pallet-report-table-head sticky top-0 z-10">
               <TableRow>
-                {['Batch Information', 'Order Description', 'Source', 'Production Name', 'Product KG', 'Selection'].map((heading) => <TableHead key={heading} className="whitespace-nowrap py-3">{heading}</TableHead>)}
+                {['Batch Information', 'Order Description', 'Batch Description', 'Sources', 'Recipe', 'Product Name', 'Product KG', 'Selection'].map((heading) => (
+                  <TableHead key={heading} className="whitespace-nowrap border px-3 py-3 font-semibold">{heading}</TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? Array.from({ length: 4 }).map((_, index) => (
-                <TableRow key={index}>{Array.from({ length: 6 }).map((__, cell) => <TableCell key={cell} className="py-5"><Skeleton className="h-12 w-28" /></TableCell>)}</TableRow>
+                <TableRow key={index}>{Array.from({ length: 8 }).map((__, cell) => <TableCell key={cell} className="border py-5"><Skeleton className="h-12 w-28" /></TableCell>)}</TableRow>
               )) : items.length ? items.map((order) => {
                 const movements = order.movements.length ? order.movements : [{ ...order, id: order.id, quantity: order.product_kg, observed_at: order.actual_start_time }]
                 const sources = uniqueValues(movements.flatMap((movement) => [movement.source1, movement.source2]))
@@ -318,46 +308,53 @@ function HistoryPanel() {
                 const destination2 = uniqueValues(movements.map((movement) => movement.destination2))
                 const running = order.status === 'RUNNING'
                 return (
-                  <TableRow key={order.id} className="align-top transition-colors hover:bg-slate-800/40 light:hover:bg-slate-50">
-                    <TableCell className="min-w-[290px] py-4">
-                      <div className="space-y-3 rounded-lg border border-slate-700/50 bg-slate-950/35 p-3 light:border-slate-200 light:bg-slate-50">
-                        <div className="flex items-center gap-2">
-                          <Badge className="bg-cyan-600 hover:bg-cyan-600">{order.line}</Badge>
-                          <Badge className={running ? 'bg-emerald-600 hover:bg-emerald-600' : 'bg-slate-600 hover:bg-slate-600'}>{running ? 'Running' : 'Completed'}</Badge>
-                        </div>
-                        <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs">
-                          <div><span className="block text-slate-500">Actual start</span><span className="text-slate-200 light:text-slate-800">{formatTimestamp(order.actual_start_time)}</span></div>
-                          <div><span className="block text-slate-500">Actual end</span><span className="text-slate-200 light:text-slate-800">{running ? 'Live' : formatTimestamp(order.actual_end_time)}</span></div>
-                          <div><span className="block text-slate-500">Destination 1</span><ValueTrail values={destination1} /></div>
-                          <div><span className="block text-slate-500">Destination 2</span><ValueTrail values={destination2} /></div>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-slate-400"><Timer className="h-3.5 w-3.5" /> Duration: <span className="font-medium text-slate-200 light:text-slate-800">{running ? 'Live · ' : ''}{formatDuration(order.duration_seconds)}</span></div>
-                      </div>
+                  <TableRow key={order.id} className="align-top transition-colors">
+                    <TableCell className="min-w-[280px] border p-3 text-sm leading-6">
+                      <div className="mb-1 font-bold">{order.line} · {running ? 'Running' : 'Completed'}</div>
+                      <div><span className="font-medium">Actual Start:</span> {formatTimestamp(order.actual_start_time)}</div>
+                      <div><span className="font-medium">Ended:</span> {running ? 'Live' : formatTimestamp(order.actual_end_time)}</div>
+                      <div><span className="font-medium">Destination bin1:</span> {displayTrail(destination1)}</div>
+                      <div><span className="font-medium">Destination bin2:</span> {displayTrail(destination2)}</div>
+                      <div><span className="font-medium">Duration:</span> {running ? 'Live · ' : ''}{formatDuration(order.duration_seconds)}</div>
                     </TableCell>
-                    <TableCell className="min-w-36 py-5"><div className="text-2xl font-bold text-cyan-400">{order.order_description}</div><div className="mt-1 text-xs text-slate-500">{order.line} Order #{order.order_sequence}</div></TableCell>
-                    <TableCell className="min-w-36 py-5"><ValueTrail values={sources} /></TableCell>
-                    <TableCell className="min-w-36 py-5"><span className="text-slate-500">{order.production_name || 'Not mapped'}</span><div className="mt-1 text-xs text-slate-500">Material: {order.material || '—'}</div></TableCell>
-                    <TableCell className="min-w-36 py-5"><div className="text-xl font-bold text-amber-400 light:text-amber-700">{formatQuantity(order.product_kg)}</div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">KG</div></TableCell>
-                    <TableCell className="min-w-28 py-5">
-                      {order.line === 'P1' || order.line === 'P2' || order.selection == null ? <span className="text-slate-500">—</span> : <><Badge variant="outline" className="border-violet-500/40 text-violet-300 light:text-violet-700">{order.selection}</Badge><div className="mt-1 text-xs text-slate-500">{selectionMeaning(order.selection)}</div></>}
+                    <TableCell className="min-w-36 border p-3 text-lg font-semibold">{order.order_description}</TableCell>
+                    <TableCell className="min-w-40 border p-3 text-sm">
+                      <div>Batch ID: {order.id}</div>
+                      <div>Order #{order.order_sequence}</div>
+                    </TableCell>
+                    <TableCell className="min-w-32 border p-3 font-medium">{displayTrail(sources)}</TableCell>
+                    <TableCell className="min-w-32 border p-3">{order.material || '—'}</TableCell>
+                    <TableCell className="min-w-40 border p-3">{order.production_name || '—'}</TableCell>
+                    <TableCell className="min-w-32 border p-3 text-lg font-bold">{formatQuantity(order.product_kg)} KG</TableCell>
+                    <TableCell className="min-w-28 border p-3">
+                      {order.line === 'P1' || order.line === 'P2' || order.selection == null ? '—' : <><span className="font-semibold">{order.selection}</span><div className="text-xs opacity-70">{selectionMeaning(order.selection)}</div></>}
                     </TableCell>
                   </TableRow>
                 )
-              }) : <TableRow><TableCell colSpan={6} className="h-36 text-center text-slate-400">No pallet orders match these filters.</TableCell></TableRow>}
+              }) : <TableRow><TableCell colSpan={8} className="h-36 border text-center text-muted-foreground">No pallet orders match these filters.</TableCell></TableRow>}
             </TableBody>
+            {!loading && items.length > 0 && (
+              <TableFooter className="pallet-report-total-row">
+                <TableRow>
+                  <TableCell colSpan={6} className="border px-3 py-3 font-bold">Total</TableCell>
+                  <TableCell className="border px-3 py-3 text-lg font-bold">{formatQuantity(summary?.total_product_kg ?? 0)} KG</TableCell>
+                  <TableCell className="border px-3 py-3" />
+                </TableRow>
+              </TableFooter>
+            )}
           </Table>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/50 p-4 light:border-gray-200">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-4">
           <div className="flex items-center gap-3">
             <Select value={String(pagination.page_size)} onValueChange={(value) => setPagination((current) => ({ ...current, page: 1, page_size: Number(value) }))}>
               <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
               <SelectContent>{[25, 50, 100].map((size) => <SelectItem key={size} value={String(size)}>{size} per page</SelectItem>)}</SelectContent>
             </Select>
-            <span className="text-sm text-slate-500">{pagination.total.toLocaleString()} orders</span>
+            <span className="text-sm text-muted-foreground">{pagination.total.toLocaleString()} orders</span>
           </div>
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" disabled={loading || pagination.page <= 1} onClick={() => setPagination((current) => ({ ...current, page: current.page - 1 }))}><ChevronLeft className="mr-1 h-4 w-4" /> Previous</Button>
-            <span className="text-sm text-slate-300 light:text-gray-700">Page {pagination.page} of {Math.max(1, pagination.pages)}</span>
+            <span className="text-sm text-foreground">Page {pagination.page} of {Math.max(1, pagination.pages)}</span>
             <Button variant="outline" size="sm" disabled={loading || pagination.page >= pagination.pages} onClick={() => setPagination((current) => ({ ...current, page: current.page + 1 }))}>Next <ChevronRight className="ml-1 h-4 w-4" /></Button>
           </div>
         </div>
