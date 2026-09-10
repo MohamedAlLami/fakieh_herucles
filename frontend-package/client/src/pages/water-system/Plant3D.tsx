@@ -95,7 +95,7 @@ import {
 import { SiloList } from '../../components/water-system/plant3d/SiloList';
 import { KpiStrip } from '../../components/water-system/plant3d/KpiStrip';
 import { Hint } from '../../components/water-system/plant3d/Hint';
-import { ControlBar, type ViewMode, type LabelMode } from '../../components/water-system/plant3d/ControlBar';
+import type { ViewMode, LabelMode } from '../../components/water-system/plant3d/ControlBar';
 import { DataChip, NUMBER_CHIP_W, DATA_CHIP_W, type ChipStatus } from '../../components/water-system/plant3d/DataChip';
 import { statusCategoryFor } from '../../components/water-system/plant3d/PlantHud';
 import { cn } from '@/lib/utils';
@@ -772,13 +772,25 @@ function ShadowFollow({
  * prop at all (Codex audit, plan §6a) — exposure genuinely lives only on the
  * renderer, so this is the one place it can be kept in sync with `look`.
  */
-function ExposureDrive({ exposure }: { exposure: number }) {
+function ExposureDrive({ exposure, postChain }: { exposure: number; postChain: boolean }) {
   const gl = useThree((s) => s.gl);
   useEffect(() => {
-    gl.toneMappingExposure = exposure;
-  }, [gl, exposure]);
+    gl.toneMappingExposure = exposure * (postChain ? POST_CHAIN_EXPOSURE_GAIN : 1);
+  }, [gl, exposure, postChain]);
   return null;
 }
+
+/**
+ * The post chain renders the same scene about twice as bright as the
+ * renderer's own tone-mapping path at an equal `toneMappingExposure`.
+ * Measured 2026-09-03, whole site, day look, mean luma of the scene area
+ * (0..255): renderer path at 0.8 -> 147 (client's laptop 143); composer
+ * path at 0.8 -> 184 (laptop 187), at 0.5 -> 159, at 0.45 -> 153, at
+ * 0.4 -> 145. The looks were judged on the laptop with the chain dropped
+ * by the performance monitor, so the chain path halves the exposure to
+ * match; otherwise the picture jumped a stop every time the tier changed.
+ */
+const POST_CHAIN_EXPOSURE_GAIN = 0.5;
 
 /* ------------------------------------------------------------------ */
 /* Instrumentation — measure, do not assume                            */
@@ -1327,7 +1339,7 @@ function Scene({
         insetBottom={insetBottom}
       />
       <StatsProbe target={statsRef} />
-      <ExposureDrive exposure={look.exposure} />
+      <ExposureDrive exposure={look.exposure} postChain={!lowPower} />
       <AdaptiveDpr pixelated />
     </>
   );
@@ -2357,26 +2369,10 @@ export default function Plant3D() {
         }}
       />
       <Hint />
-      {/* Bottom-left control cluster, above the legend dock (h-8): 3D/2D,
-          X-ray (the acrylic shells), Reset, Fit all, Labels, zoom. */}
-      <div className="pointer-events-none absolute left-2 z-20" style={{ bottom: 32 + 8 }}>
-        <div className="pointer-events-auto">
-          <ControlBar
-            viewMode={viewMode}
-            onViewMode={setViewMode}
-            xray={!solidShells}
-            onXray={(v) => setSolidShellsState(!v)}
-            onReset={() => setFitNonce((n) => n + 1)}
-            onFit={() => {
-              goToZone('all');
-              setFitNonce((n) => n + 1);
-            }}
-            labels={labelMode}
-            onLabels={setLabelMode}
-            onZoom={(dir) => setZoomReq((r) => ({ n: r.n + 1, f: dir === 'in' ? 0.85 : 1.18 }))}
-          />
-        </div>
-      </div>
+      {/* The bottom-left control bar (3D/2D, X-ray, Reset, Fit, Labels, zoom)
+          was removed on 2026-09-03 at the client's request ("unneeded"). The
+          state it drove stays: view mode is fixed at 3D, labels come from the
+          header pill, shells from the look. */}
 
       {/*
         Full screen's own floating top bar.
