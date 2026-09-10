@@ -26,9 +26,12 @@ Four things about the source data drive the shape of this module.
    It is excluded from the headline and reported separately.
 
 4. Rows whose product is literally "Not Selected" are batching-system
-   placeholders. Every other KPI endpoint drops them (kpi_calendar_routes,
-   utils/kpi_pagination), and they are the source of this table's absurd
-   outliers -- the highest apparent rate in the sample extract, 18 t/h, is one.
+   placeholders. Every other KPI endpoint drops them, and they are the source
+   of this table's absurd outliers -- the highest apparent rate in the sample
+   extract, 18 t/h, is one. The filter below copies the strictest sibling
+   (kpi_material_routes.get_reports_product_summary), which also trims
+   whitespace and rejects blank product names, rather than the looser one in
+   kpi_calendar_routes.
 
 Two attribution rules keep this card consistent with the pages beside it:
 
@@ -48,6 +51,7 @@ tested against a captured extract instead
 from __future__ import annotations
 
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -59,7 +63,7 @@ from models import db
 from utils.timezone import (
     BUSINESS_TZ,
     format_db_datetime_utc_iso,
-    parse_request_datetime,
+    parse_calendar_range,
     production_day_bounds_utc,
     saudi_local_to_utc_naive,
 )
@@ -84,6 +88,10 @@ DOSING_TOLERANCE_PCT = float(os.getenv("AI_DOSING_TOLERANCE_PCT", "2.0"))
 # A batch with no end timestamp is only believable as "still running" for so
 # long; past this it is an abandoned row, not a running mixer.
 RUNNING_BATCH_MAX_HOURS = 12
+
+# The rolling path clamps ?hours; a custom range needs the same ceiling, or one
+# query string can ask for a decade of GROUP BY and a 262,800-entry hour array.
+MAX_WINDOW = timedelta(days=31)
 
 
 # --------------------------------------------------------------------------
@@ -114,6 +122,31 @@ def _clip(start, end, lo, hi):
     s = max(start, lo)
     e = min(end, hi)
     return (s, e) if e > s else None
+
+
+def batch_matches_window(start, end, window_start, window_end, lookback):
+    """Whether a batch belongs to this window at all.
+
+    This is the single statement of the rule; BATCH_ROLLUP_SQL's WHERE clause
+    mirrors it in T-SQL, and the checks in scripts/test_production_kpi.py test
+    this rather than restating the SQL. Change one, change both.
+
+    A batch qualifies when it starts before the window closes AND any of:
+      * it started inside the window          -- its tonnage is booked here
+      * it was still open when the window opened -- it contributes time
+      * it has no end and started recently enough to still be running
+
+    The second and third clauses are why a skewed end (end < start, which clock
+    drift between batching servers does produce) cannot hide a batch that
+    plainly started inside the window.
+    """
+    if start is None or start >= window_end:
+        return False
+    if start >= window_start:
+        return True
+    if end is None:
+        return start >= lookback
+    return end >= window_start
 
 
 def compute_production_kpi(
@@ -283,7 +316,9 @@ def _tons_by_hour(batches, window_start, window_end):
     agree with the calendar. A batch's weight is never split across two hours;
     the batching system reports batches, not a continuous rate.
     """
-    total_hours = int(round((window_end - window_start).total_seconds() / 3600.0))
+    # ceil rather than round: rounding a 2.4 h window down to 2 buckets would
+    # silently drop every batch in the final 24 minutes.
+    total_hours = math.ceil((window_end - window_start).total_seconds() / 3600.0)
     if total_hours <= 0:
         return []
     tons = [0.0] * total_hours
@@ -315,6 +350,15 @@ def _tons_by_hour(batches, window_start, window_end):
 # --------------------------------------------------------------------------
 
 
+# The WHERE clause here is the T-SQL mirror of batch_matches_window() above.
+#
+# The divisor is NULLIF(..., 0) rather than a `WHEN [SetPoint Float] > 0 AND
+# ... / [SetPoint Float]` guard: SQL Server does not promise to evaluate the
+# two sides of an AND inside one WHEN left to right, so the optimiser is free
+# to run the division first and raise "Divide by zero error encountered". With
+# NULLIF the division yields NULL, the comparison is not true, and the row
+# scores 0 -- which is what a zero setpoint should score anyway, since
+# scored_rows already refuses to count it.
 BATCH_ROLLUP_SQL = """
     SELECT
         [Batch GUID]                                         AS guid,
@@ -328,17 +372,20 @@ BATCH_ROLLUP_SQL = """
               - CAST([SetPoint Float] AS float)))            AS deviation_kg,
         SUM(CASE WHEN CAST([SetPoint Float] AS float) > 0 THEN 1 ELSE 0 END)
                                                              AS scored_rows,
-        SUM(CASE WHEN CAST([SetPoint Float] AS float) > 0
-                  AND ABS(CAST([Actual Value Float] AS float)
+        SUM(CASE WHEN ABS(CAST([Actual Value Float] AS float)
                         - CAST([SetPoint Float] AS float))
-                      / CAST([SetPoint Float] AS float) * 100.0 <= :tolerance
+                      / NULLIF(CAST([SetPoint Float] AS float), 0) * 100.0
+                      <= :tolerance
                  THEN 1 ELSE 0 END)                          AS on_target_rows,
         COUNT(*)                                             AS material_rows
     FROM [{database}].[dbo].[{table}]
-    WHERE LOWER([Product Name]) <> 'not selected'
+    WHERE LOWER(LTRIM(RTRIM([Product Name]))) <> 'not selected'
+      AND [Product Name] IS NOT NULL
+      AND LTRIM(RTRIM([Product Name])) <> ''
       AND [Batch Act Start] < :window_end
       AND (
-            [Batch Act End] >= :window_start
+            [Batch Act Start] >= :window_start
+         OR [Batch Act End] >= :window_start
          OR ([Batch Act End] IS NULL AND [Batch Act Start] >= :lookback)
           )
     GROUP BY [Batch GUID]
@@ -350,8 +397,12 @@ def _resolve_window():
 
     ?date=YYYY-MM-DD      that production day, 07:00 AST to 07:00 AST
     ?mode=production_day  the production day in progress right now
-    ?startDate=&endDate=  an explicit range
+    ?startDate=&endDate=  an explicit range, read the way the Batch Calendar
+                          reads one
     default               rolling, ending now, ?hours= long (24 by default)
+
+    Raises ValueError for input the caller got wrong; the route turns that into
+    a 400.
     """
     date_str = request.args.get("date")
     if date_str:
@@ -367,11 +418,27 @@ def _resolve_window():
 
     start_str = request.args.get("startDate")
     end_str = request.args.get("endDate")
-    if start_str and end_str:
-        return parse_request_datetime(start_str), parse_request_datetime(end_str), "custom"
+    if start_str or end_str:
+        if not (start_str and end_str):
+            # /kpi_calendar rejects a half-given range rather than quietly
+            # ignoring it, and a silently different window is exactly the kind
+            # of wrong number this card exists to avoid.
+            raise ValueError("startDate and endDate must be given together")
+        # parse_calendar_range, not parse_request_datetime: the former reads a
+        # naive "2025-03-28T07:00" as Saudi wall time the way the Batch Calendar
+        # does, the latter would read it as UTC and land the window three hours
+        # off the calendar's for the identical query string.
+        start, end = parse_calendar_range(start_str, end_str)
+        if end - start > MAX_WINDOW:
+            raise ValueError(f"window longer than {MAX_WINDOW.days} days")
+        return start, end, "custom"
 
-    hours = request.args.get("hours", DEFAULT_WINDOW_HOURS, type=float) or DEFAULT_WINDOW_HOURS
-    hours = min(max(hours, 1.0), 24.0 * 31)
+    # `or DEFAULT` would swallow hours=0, since 0.0 is falsy; every other
+    # out-of-range value gets clamped, so that one should too.
+    hours = request.args.get("hours", type=float)
+    if hours is None:
+        hours = DEFAULT_WINDOW_HOURS
+    hours = min(max(hours, 1.0), MAX_WINDOW.total_seconds() / 3600.0)
     end = datetime.now(UTC).replace(tzinfo=None)
     return end - timedelta(hours=hours), end, "rolling"
 

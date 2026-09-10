@@ -23,8 +23,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, Clock, Flag, Gauge, Zap } from 'lucide-react'
 import { BUSINESS_TZ, parseUtcDate } from '@/utils/timezone'
 
-export interface ProductionKpiResponse {
-  success: boolean
+/** The payload the endpoint returns when it succeeds. */
+export interface ProductionKpi {
   mode: 'rolling' | 'production_day' | 'custom'
   window: { start: string | null; end: string | null; hours: number; elapsed_hours: number }
   batches: number
@@ -46,9 +46,16 @@ export interface ProductionKpiResponse {
   timeline: Array<{ start: string | null; end: string | null }>
   by_hour: Array<{ hour_start: string | null; tons: number; batches: number }>
   non_production: { categories: string[]; batches: number; tons: number }
-  error?: string
-  message?: string
 }
+
+/**
+ * A failure response carries none of the fields above -- the route returns just
+ * {success, error, message} on 400/500. Modelling that as a union keeps the
+ * next person from reading `kpi.tons` off an error body.
+ */
+export type ProductionKpiResponse =
+  | ({ success: true } & ProductionKpi)
+  | { success: false; error?: string; message?: string }
 
 const REFRESH_MS = 60000
 
@@ -71,8 +78,8 @@ const hourFmt = new Intl.DateTimeFormat('en-US', {
   hour12: false,
 })
 
-function formatClock(iso: string | null | undefined): string {
-  const d = parseUtcDate(iso)
+function formatClock(value: string | Date | null | undefined): string {
+  const d = value instanceof Date ? value : parseUtcDate(value)
   return d ? timeFmt.format(d) : '--:--'
 }
 
@@ -135,7 +142,7 @@ function Chip({ label, value }: { label: string; value: string }) {
 }
 
 export default function ProductionPerformanceCard() {
-  const [kpi, setKpi] = useState<ProductionKpiResponse | null>(null)
+  const [kpi, setKpi] = useState<ProductionKpi | null>(null)
   // Operators read this card, so the visible message stays plain; whatever the
   // browser or the server actually said is kept for the tooltip.
   const [error, setError] = useState<{ text: string; detail?: string } | null>(null)
@@ -158,14 +165,17 @@ export default function ProductionPerformanceCard() {
         // "Unexpected end of JSON input" ever would.
         body = null
       }
-      if (!res.ok || !body?.success) {
+      if (!res.ok || body === null || body.success !== true) {
+        const failure = body && body.success === false ? body : null
         setError({
           text: 'The reporting service could not return production data.',
-          detail: body?.message || body?.error || `HTTP ${res.status} ${res.statusText}`.trim(),
+          detail:
+            failure?.message || failure?.error || `HTTP ${res.status} ${res.statusText}`.trim(),
         })
         return
       }
-      setKpi(body)
+      const { success: _ok, ...data } = body
+      setKpi(data)
       setError(null)
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
@@ -209,6 +219,7 @@ export default function ProductionPerformanceCard() {
 
   const byHour = kpi?.by_hour ?? []
   const peakHour = byHour.reduce((max, h) => Math.max(max, h.tons), 0)
+  const busiest = peakHour > 0 ? byHour.find((h) => h.tons === peakHour) ?? null : null
 
   // Axis ticks every three hours, labelled in plant time.
   const ticks = windowStart
@@ -240,10 +251,16 @@ export default function ProductionPerformanceCard() {
         <div className="flex items-center space-x-2 shrink-0">
           <div
             className={`w-3 h-3 rounded-full ${
-              error ? 'bg-slate-500' : 'bg-cyan-500 animate-pulse'
+              error ? 'bg-orange-400' : 'bg-cyan-500 animate-pulse'
             }`}
           />
-          <span className="text-xs text-cyan-400 light:text-cyan-600 font-medium">
+          <span
+            className={`text-xs font-medium ${
+              error
+                ? 'text-orange-400 light:text-orange-600'
+                : 'text-cyan-400 light:text-cyan-600'
+            }`}
+          >
             {error ? 'Unavailable' : 'Last 24 hours'}
           </span>
         </div>
@@ -251,7 +268,7 @@ export default function ProductionPerformanceCard() {
 
       {loading && !kpi ? (
         <div className="space-y-5" aria-busy="true">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {[0, 1, 2, 3].map((i) => (
               <div key={i} className="space-y-2">
                 <div className="h-4 w-24 rounded bg-slate-700/50 light:bg-gray-200 animate-pulse" />
@@ -264,7 +281,7 @@ export default function ProductionPerformanceCard() {
       ) : (
         <>
           {/* The four figures */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="min-w-0">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-cyan-400 light:text-cyan-600 shrink-0">
@@ -346,7 +363,21 @@ export default function ProductionPerformanceCard() {
               </span>
             </div>
 
-            <div className="flex items-end gap-[2px] h-16" role="img" aria-label="Tonnage produced per hour over the last 24 hours">
+            <div
+              className="flex items-end gap-[2px] h-16"
+              role="img"
+              // role="img" hides the 24 bars from assistive tech, so this
+              // sentence has to say what the bars say.
+              aria-label={
+                hasData
+                  ? `Tonnage produced per hour over the last 24 hours. ` +
+                    `${(kpi?.tons ?? 0).toFixed(1)} tonnes in ${kpi?.batches ?? 0} batches. ` +
+                    (busiest
+                      ? `Busiest hour ${formatClock(busiest.hour_start)} with ${busiest.tons.toFixed(1)} tonnes.`
+                      : '')
+                  : 'Tonnage per hour. No batches recorded in the last 24 hours.'
+              }
+            >
               {(byHour.length ? byHour : Array.from({ length: 24 }, () => null)).map((h, i) => {
                 const tons = h?.tons ?? 0
                 const height = peakHour > 0 ? Math.max((tons / peakHour) * 100, tons > 0 ? 6 : 0) : 0
@@ -378,7 +409,7 @@ export default function ProductionPerformanceCard() {
                   key={i}
                   className="absolute inset-y-0 bg-cyan-500 rounded-full"
                   style={{ left: `${b.left}%`, width: `${b.width}%` }}
-                  title={`Running ${formatClock(b.s.toISOString())} → ${formatClock(b.e.toISOString())}`}
+                  title={`Running ${formatClock(b.s)} → ${formatClock(b.e)}`}
                 />
               ))}
             </div>
@@ -387,7 +418,12 @@ export default function ProductionPerformanceCard() {
               {ticks.map((t, i) => (
                 <span
                   key={i}
-                  className="absolute text-[10px] text-slate-500 light:text-gray-500 tabular-nums -translate-x-1/2"
+                  // Nine labels need ~260px; a phone leaves ~270px inside the
+                  // card's padding, so every other one steps aside below sm
+                  // rather than colliding.
+                  className={`absolute text-[10px] text-slate-500 light:text-gray-500 tabular-nums -translate-x-1/2 ${
+                    i % 2 === 1 ? 'hidden sm:inline' : ''
+                  }`}
                   style={{ left: `${t.pct}%` }}
                 >
                   {t.label}

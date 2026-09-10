@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -36,8 +37,11 @@ EXTRACT = os.path.join(REPO, "fakieh_sql.csv")
 
 try:
     from routes.production_kpi import (
+        BATCH_ROLLUP_SQL,
         DOSING_TOLERANCE_PCT,
         NON_PRODUCTION_CATEGORIES,
+        RUNNING_BATCH_MAX_HOURS,
+        batch_matches_window,
         compute_production_kpi,
         merge_intervals,
     )
@@ -86,13 +90,24 @@ def as_float(value):
         return None
 
 
-def load_batches(path: str) -> list[dict]:
-    """Roll the material-row extract up to batches, mirroring BATCH_ROLLUP_SQL."""
+def load_batches(path: str) -> tuple[list[dict], int]:
+    """Roll the material-row extract up to batches, mirroring BATCH_ROLLUP_SQL.
+
+    Including the placeholder filter: the query drops rows whose product is
+    "Not Selected" BEFORE grouping, so a batch that carries a mix of real and
+    placeholder rows keeps the batch and loses only those rows. The extract
+    really does contain such rows, so a loader that skipped this would be
+    testing a query we do not run.
+    """
     with open(path, encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
 
+    dropped = 0
     grouped: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
+        if (row["Product Name"] or "").strip().lower() == "not selected":
+            dropped += 1
+            continue
         grouped[row["Batch GUID"]].append(row)
 
     batches = []
@@ -126,7 +141,7 @@ def load_batches(path: str) -> list[dict]:
                 "scored_rows": scored,
             }
         )
-    return batches
+    return batches, dropped
 
 
 def brute_force_running_hours(batches, window_start, window_end, step_seconds=30) -> float:
@@ -178,6 +193,150 @@ def test_merge_intervals():
     check("queued order collapses to one span", len(merged), 1)
     check("union of a queued order", round(union_hours, 3), 160 / 60, tol=0.02)
     check("sum of durations is much larger", sum_hours > 3 * union_hours, True)
+
+
+def test_window_predicate():
+    """Which batches the query should return at all.
+
+    batch_matches_window is the single statement of this rule and
+    BATCH_ROLLUP_SQL's WHERE clause mirrors it, so these checks describe the
+    intent rather than echoing the SQL text back at itself.
+    """
+    print("\nwindow predicate")
+    ws = datetime(2025, 3, 28, 4, 0)
+    we = ws + timedelta(hours=24)
+    lookback = ws - timedelta(hours=RUNNING_BATCH_MAX_HOURS)
+    m = lambda s, e: batch_matches_window(s, e, ws, we, lookback)  # noqa: E731
+    h = timedelta(hours=1)
+
+    check("ordinary batch inside the window", m(ws + h, ws + 2 * h), True)
+    check("batch that ended before the window opened", m(ws - 3 * h, ws - 2 * h), False)
+    check("batch open across the opening edge", m(ws - h, ws + h), True)
+    check("batch open across the closing edge", m(we - h, we + h), True)
+    check("batch starting exactly at the close", m(we, we + h), False)
+    check("batch starting exactly at the open", m(ws, ws + h), True)
+    check("batch entirely after the window", m(we + h, we + 2 * h), False)
+
+    # The case the SQL used to lose: a batch that plainly started inside the
+    # window but whose end drifted behind its own start. compute_production_kpi
+    # has an explicit branch for this, which is dead code if the query never
+    # returns the row.
+    check("skewed end, before its own start", m(ws + 4 * h, ws + 3 * h), True)
+    check("skewed end, before the window opened", m(ws + 4 * h, ws - h), True)
+
+    # Still-running batches, which the extract contains none of.
+    check("running batch started inside the window", m(ws + h, None), True)
+    check("running batch started just before the window", m(ws - h, None), True)
+    check("running batch older than the lookback is abandoned", m(lookback - h, None), False)
+    check("running batch exactly at the lookback edge", m(lookback, None), True)
+
+    check("a batch with no start is not a batch", m(None, ws + h), False)
+
+
+def test_rollup_sql_shape():
+    """The query text cannot be executed here, so assert what it must contain.
+
+    A weak check, but the alternative is zero coverage of a string that decides
+    every number on the card. It exists to fail loudly if someone reintroduces
+    the guarded-divide or drops the placeholder filter.
+    """
+    print("\nBATCH_ROLLUP_SQL")
+    sql = BATCH_ROLLUP_SQL
+
+    check("divides through NULLIF, not a guarded AND", "NULLIF(CAST([SetPoint Float] AS float), 0)" in sql, True)
+    check(
+        "no bare guarded divide by [SetPoint Float]",
+        "/ CAST([SetPoint Float] AS float)" in sql,
+        False,
+    )
+    check("drops 'Not Selected' placeholder rows", "'not selected'" in sql.lower(), True)
+    check("trims before comparing, as the strictest sibling does", "LTRIM(RTRIM([Product Name]))" in sql, True)
+    check("rejects null product names explicitly", "[Product Name] IS NOT NULL" in sql, True)
+    check("admits batches that started inside the window", "[Batch Act Start] >= :window_start" in sql, True)
+    check("admits batches still open at the window edge", "[Batch Act End] >= :window_start" in sql, True)
+    check("admits running batches within the lookback", "[Batch Act End] IS NULL" in sql, True)
+    check("groups to one row per batch", "GROUP BY [Batch GUID]" in sql, True)
+
+    # Every placeholder must be one the route actually binds.
+    supplied = {"window_start", "window_end", "lookback", "tolerance"}
+    used = set(re.findall(r":([a-z_]+)", sql))
+    check("no unbound placeholders", sorted(used - supplied), [])
+    check("no unused bindings", sorted(supplied - used), [])
+    check("table and database are the only interpolations", sorted(re.findall(r"\{(\w+)\}", sql)), ["database", "table"])
+
+
+def test_resolve_window():
+    """How the query string becomes a window, including the hostile cases."""
+    print("\nwindow resolution")
+    try:
+        from flask import Flask
+
+        from routes.production_kpi import MAX_WINDOW, _resolve_window
+        from utils.timezone import parse_calendar_range
+    except Exception as exc:  # pragma: no cover
+        print(f"CANNOT RUN: {exc!r}")
+        sys.exit(2)
+
+    app = Flask(__name__)
+
+    def resolve(query: str):
+        with app.test_request_context(query):
+            return _resolve_window()
+
+    start, end, mode = resolve("/?hours=24")
+    check("default rolling window is 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
+    check("default mode is rolling", mode, "rolling")
+
+    # 0.0 is falsy, so `hours or DEFAULT` used to hand back 24 h here while
+    # every other bad value got clamped.
+    start, end, _ = resolve("/?hours=0")
+    check("hours=0 clamps to the 1 h floor", round((end - start).total_seconds() / 3600, 3), 1.0)
+    start, end, _ = resolve("/?hours=-5")
+    check("negative hours clamps to the floor", round((end - start).total_seconds() / 3600, 3), 1.0)
+    start, end, _ = resolve("/?hours=1e9")
+    check(
+        "absurd hours clamps to the ceiling",
+        round((end - start).total_seconds() / 3600, 3),
+        MAX_WINDOW.total_seconds() / 3600,
+    )
+    start, end, _ = resolve("/?hours=abc")
+    check("unparseable hours falls back to 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
+
+    # The window must land where the Batch Calendar would put it. Reading a
+    # naive "07:00" as UTC rather than Saudi wall time put this card three
+    # hours away from the calendar for the identical query string.
+    q = "startDate=2025-03-28T07:00:00&endDate=2025-03-29T07:00:00"
+    start, end, mode = resolve("/?" + q)
+    cal_start, cal_end = parse_calendar_range("2025-03-28T07:00:00", "2025-03-29T07:00:00")
+    check("custom mode is reported", mode, "custom")
+    check("custom start agrees with the Batch Calendar", start, cal_start)
+    check("custom end agrees with the Batch Calendar", end, cal_end)
+
+    def raises(query: str) -> bool:
+        try:
+            resolve(query)
+            return False
+        except ValueError:
+            return True
+
+    check("startDate without endDate is rejected", raises("/?startDate=2025-03-28T07:00:00"), True)
+    check("endDate without startDate is rejected", raises("/?endDate=2025-03-29T07:00:00"), True)
+    check(
+        "an unbounded custom range is rejected",
+        raises("/?startDate=2000-01-01T00:00:00&endDate=2030-01-01T00:00:00"),
+        True,
+    )
+    check("an impossible calendar date is rejected", raises("/?date=2026-02-30"), True)
+    check("a garbage date is rejected", raises("/?date=garbage"), True)
+
+    start, end, mode = resolve("/?date=2025-03-28")
+    check("a production day is exactly 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
+    check("a production day reports its mode", mode, "production_day")
+    # 07:00 Asia/Riyadh is 04:00 UTC, and the columns are naive UTC.
+    check("a production day opens at 07:00 plant time", start.hour, 4)
+
+    _, _, mode = resolve("/?mode=PRODUCTION_DAY")
+    check("mode matching is case-insensitive", mode, "production_day")
 
 
 def test_window_clipping():
@@ -323,7 +482,10 @@ def test_against_real_extract():
         print(f"CANNOT RUN: extract not found at {EXTRACT}")
         sys.exit(2)
 
-    batches = load_batches(EXTRACT)
+    batches, dropped_placeholders = load_batches(EXTRACT)
+    # The extract really does carry placeholder rows, so this filter is load
+    # bearing rather than defensive.
+    check("the extract contains 'Not Selected' rows to drop", dropped_placeholders > 0, True)
     print(f"  loaded {len(batches)} batches from the extract")
     if len(batches) < 50:
         print("CANNOT RUN: extract has fewer batches than expected; is it truncated?")
@@ -336,10 +498,9 @@ def test_against_real_extract():
 
     # What the route hands the function: every batch OVERLAPPING the window,
     # which is what BATCH_ROLLUP_SQL selects.
+    lookback = ws - timedelta(hours=RUNNING_BATCH_MAX_HOURS)
     overlapping = [
-        b
-        for b in batches
-        if b["start"] and b["start"] < we and (b["end"] is None or b["end"] >= ws)
+        b for b in batches if batch_matches_window(b["start"], b["end"], ws, we, lookback)
     ]
     started_inside = [b for b in overlapping if ws <= b["start"] < we]
     print(
@@ -437,6 +598,9 @@ def test_against_real_extract():
 def main():
     print("production KPI checks")
     test_merge_intervals()
+    test_window_predicate()
+    test_rollup_sql_shape()
+    test_resolve_window()
     test_window_clipping()
     test_outloading_excluded()
     test_against_real_extract()
