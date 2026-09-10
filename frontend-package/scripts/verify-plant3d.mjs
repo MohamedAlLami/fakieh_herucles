@@ -139,7 +139,7 @@ async function main() {
   check('silo numbers contiguous and in the plant ranges', () => {
     const RANGES = {
       100: [101, 115], 200: [201, 203], 300: [301, 322], 400: [401, 408],
-      500: [501, 505], 600: [601, 605], 800: [801, 848], 900: [901, 930],
+      600: [601, 605], 800: [801, 848], 900: [901, 930],
     };
     const bad = [];
     for (const [series, [lo, hi]] of Object.entries(RANGES)) {
@@ -440,13 +440,24 @@ async function main() {
     return bad.length ? bad.join(', ') : null;
   });
 
-  check('an unmonitored bin never gets a level', () => {
-    const p = SILOS.find((s) => !s.group.monitored);
-    if (!p) return 'no unmonitored group in the model — expected the 500 series';
-    const level = data.siloLevel(p, undefined);
-    return level.fill === null && level.reason === 'not-monitored'
-      ? null
-      : `fill=${level.fill} reason=${level.reason}`;
+  /*
+   * This used to assert that the one unmonitored group -- the 500-series
+   * liquid tanks -- never drew a level. The client retired those tanks on
+   * 2026-09-10 and every remaining group is monitored, so the check is
+   * inverted: it now guards the assumption the UI was simplified on.
+   *
+   * It matters because a good deal of code was deleted on the strength of
+   * "no group is unmonitored": the 'not-monitored' level reason, the muted
+   * shader input in Plant3D, the "not in the feed" tooltips. Re-adding an
+   * unmonitored group without restoring those would silently draw it as an
+   * ordinary bin with no data, which is the mislabelling all of this exists
+   * to prevent.
+   */
+  check('every group in the model is monitored', () => {
+    const bad = SILOS.filter((s) => !s.group.monitored).map((s) => s.siloNo);
+    return bad.length
+      ? `unmonitored bins ${bad.join(', ')} — the UI no longer has a way to show them; see this check`
+      : null;
   });
 
   check('a negative quantity clamps the fill but keeps the number', () => {

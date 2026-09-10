@@ -84,11 +84,12 @@ export const VERTICAL_EXAGGERATION = 1.25;
  *     so a bigger bin can never draw smaller than a smaller one
  *
  * THIS USED TO BE KEYED TO ZONE, NOT CAPACITY, AND IT WAS WRONG. The 100, 200
- * and 500 series returned scale 1 unconditionally; every other group ran a
+ * series returned scale 1 unconditionally; every other group ran a
  * curve keyed to its own assumed DIAMETER. That treated "which zone is this"
  * and "how big is this" as the same question, and on this plant they are not:
  * two groups can share a capacity and be given different assumed diameters
- * (this plant has exactly that — 160 t in both the 300 and 500 series, 4 m
+ * (this plant had exactly that — 160 t in both the 300 and the since-retired
+ * 500 series, 4 m
  * assumed for one, 5 m for the other), and a diameter-keyed curve has no way
  * to know they are supposed to match. Measured on the layout this replaced:
  * the 300 series (indoor, 160 t) drew at 266 m3 and the 500 series (outdoor,
@@ -153,7 +154,7 @@ export function sizeScale(g: { capacityKg: number; diameter: number }, refCapaci
   return Math.max(curve, SIZE_FLOOR_DIAMETER / g.diameter);
 }
 
-export type SeriesId = 100 | 200 | 300 | 400 | 500 | 600 | 800 | 900;
+export type SeriesId = 100 | 200 | 300 | 400 | 600 | 800 | 900;
 
 /** Derived physical dimensions of a single bin, all metres. */
 export interface SiloDims {
@@ -333,7 +334,7 @@ const SHELL: Record<ShellKind, string> = {
   /* Dosing-floor bins, painted a pale industrial green-grey. */
   painted: '#9fb8ad',
   /* Liquid tanks. The coldest and darkest of the four, so the unreported
-     500-series reads as inert rather than as working plant. */
+     liquid tanks read as inert rather than as working plant. */
   tank: '#77878f',
 };
 
@@ -405,9 +406,9 @@ export interface SiloGroupSpec {
   /**
    * Does the plant report a quantity for these bins?
    *
-   * The 400-series has no quantity tag in DB5 at all and the 500-series is
-   * unused. Neither may ever be drawn with a fill level — doing so would be
-   * animating a signal that does not exist.
+   * The 400-series has no quantity tag in DB5 at all, so it may never be
+   * drawn with a fill level — doing so would be animating a signal that does
+   * not exist.
    */
   metered: boolean;
   /** present in the application database at all */
@@ -494,61 +495,6 @@ export const SILO_GROUPS: SiloGroupSpec[] = [
     cz: -44,
     arrangement: 'Column of three',
     note: 'Flat storage in reality. Drawn as cylinders on instruction, so this group is representational rather than literal.',
-  },
-  {
-    id: 's500',
-    series: 500,
-    label: 'Liquid tanks (soya oil)',
-    archetype: 'tank',
-    structure: { stair: true },
-    zone: 'outside',
-    first: 501,
-    capacityKg: 160_000,
-    metered: false,
-    monitored: false,
-    shell: 'tank',
-    /* 5 -> 6 m (2026-09-02, client's proportions decision): a 160 t oil tank at
-       5 m was 4:1 tall; 6 m brings it near a real tank farm's 3:1. The column
-       pitch is 8 m and opens with the draw scale, so the widening is clear. */
-    diameter: 6.5,
-    hopperRatio: 0,
-    elevation: 1,
-    floor: 0,
-    /* A column, not a row. Client instruction: the tanks stand vertically
-       between the 100 bank and the 300 battery, so the mask runs down z
-       instead of along x. */
-    mask: ['X', 'X', 'X', 'X', 'X'],
-    pitchX: 8,
-    pitchZ: 8,
-    /*
-     * Moved west, out of the mill.
-     *
-     * This sat at cx -38, which put the line of five across x -56..-20 at
-     * z 14 — and mill-a occupies x -43..13, z -21..39. Three of the five tanks
-     * were therefore drawn INSIDE the raw material building, while the group is
-     * declared `zone: 'outside'`. The plant's own picture showed it and the
-     * client marked it in red before anything here noticed.
-     *
-     * Nothing could have noticed: the building-fit check only examines groups
-     * whose zone matches a building's zone, so it treats every outdoor group as
-     * having no building to fit inside and skips it. An outdoor group standing
-     * in an indoor building was outside every check in the file. There is now
-     * one for it — see 'no outdoor group stands inside a building'.
-     *
-     * cx -65 sits the column in the gap between the two banks: 22 m clear of
-     * mill-a's west wall at x -43, and 25 m east of the 100 bank's x -90. cz -6
-     * lines it up with the 300 battery's own centre line, so the three read as
-     * a sequence across the yard rather than three unrelated clusters.
-     *
-     * An earlier attempt at cx -65, cz 14 was caught by the overlap check (114
-     * and 501 sharing 1.30 m) — worth keeping in mind, because the 100 bank
-     * runs a long way down z (-58..26) and most of this gap is only clear at
-     * the x this column now stands at.
-     */
-    cx: -65,
-    cz: -6,
-    arrangement: 'Line of five',
-    note: 'In service on the plant’s own SCADA — 501-504 are soya oil, 505 is the Term IN-8 line, with live pumps and valves. They are simply absent from this application’s silo feed, so there is no level to show here. That is a gap in what this view can see, not an idle tank farm.',
   },
 
   /* ------------------------------------------------------------------ *
@@ -1004,7 +950,6 @@ export const SILO_BY_NO = new Map<number, SiloPlacement>(SILOS.map((s) => [s.sil
 export const EXPECTED_COUNTS: Readonly<Record<string, number>> = {
   s100: 15,
   s200: 3,
-  s500: 5,
   s300: 22,
   s400: 8,
   s900a: 10,
@@ -1015,9 +960,10 @@ export const EXPECTED_COUNTS: Readonly<Record<string, number>> = {
   s800: 48,
 };
 
-/** Bins the plant monitors: 131. The five 500s are not among them — the plant
-    runs them, but nothing upstream reports on them, which is not the same as
-    unused. */
+/** Bins the plant monitors: 131 — which is now every bin in the model. The
+    500-series liquid tanks were removed on the client's instruction
+    (2026-09-10); they were the only unmonitored group, so this count and
+    SILOS.length agree by construction rather than by coincidence. */
 export const MONITORED_COUNT = SILOS.filter((s) => s.group.monitored).length;
 
 /**

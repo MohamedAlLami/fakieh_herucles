@@ -26,10 +26,6 @@ import { Chip, DIVIDER, MiniBar, ago, freshness, type PlantSummary } from './Pla
     other count on this screen uses, rather than a magic 131. */
 const TOTAL_BINS = SILOS.filter((s) => s.group.monitored).length;
 
-/** The 500-series tanks: in service, absent from the feed (PRODUCT.md rule
-    6) — the Bins cell's own title, not "unused". */
-const NOT_MONITORED_COUNT = SILOS.filter((s) => !s.group.monitored).length;
-
 /**
  * Site capacity, tonnes, over every MONITORED and METERED bin.
  *
@@ -118,7 +114,7 @@ export function KpiStrip({
       )}
     >
       {/* ---- Bins ---------------------------------------------------- */}
-      <Cell label="Bins" title={`${NOT_MONITORED_COUNT} tanks not in the feed`}>
+      <Cell label="Bins" title="Bins holding stock, of every bin in the plant">
         <span className="font-mono tabular-nums text-slate-200 light:text-gray-800">
           {summary.withStock}
           <span className="text-slate-600 light:text-gray-500">/{TOTAL_BINS}</span>

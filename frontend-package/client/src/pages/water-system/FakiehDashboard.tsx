@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { CalendarIcon, Filter, RotateCcw, Clock, TrendingUp, Package, Database, Zap, Truck } from 'lucide-react'
 import { format } from 'date-fns'
 import { cn } from '@/lib/utils'
+import ProductionPerformanceCard from '@/components/water-system/ProductionPerformanceCard'
 import {
   BUSINESS_TZ,
   calendarDayWithSaudiTime,
@@ -1098,6 +1099,9 @@ export default function FakiehDashboard() {
             </div>
           </div>
         </div>
+
+        {/* 24-hour production performance: start, end, throughput, efficiency */}
+        <ProductionPerformanceCard />
 
         {/* Floating Statistics Panel */}
         {/* <div className="bg-gradient-to-r from-slate-800/80 to-slate-700/80 light:from-white/90 light:to-gray-50/90 border border-slate-600/50 light:border-gray-200/50 rounded-xl p-4 shadow-2xl backdrop-blur-sm">

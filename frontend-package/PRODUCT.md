@@ -11,7 +11,7 @@ An operations web app for the Fakieh Feed Factory (Old), Jeddah. It reads the pl
 - **The client (the boss)** reviews the screens visually and has rejected the 3D view's look four times. Their reactions are the acceptance test.
 
 ## The Plant 3D surface (this overhaul's target)
-A live 3D "shadow" of all 131 monitored bins in five zones (Yard 18 · Raw 22 · Dosing 38 · Buffer 5 · Finished 48), plus five unmonitored soya-oil tanks. Each bin shows material (colour), fill level (drawn contents), high-level and lock alarms, and freshness. Mode: **Operate**. Success is an operator reading a bin's state off the model in one look and finding any bin in two actions.
+A live 3D "shadow" of all 131 bins in five zones (Yard 18 · Raw 22 · Dosing 38 · Buffer 5 · Finished 48). Each bin shows material (colour), fill level (drawn contents), high-level and lock alarms, and freshness. Mode: **Operate**. Success is an operator reading a bin's state off the model in one look and finding any bin in two actions.
 
 ## Non-negotiables (from the design log §2)
 1. Never draw a fill the plant did not measure. The 400 series has no quantity tag and never fills.
@@ -19,9 +19,8 @@ A live 3D "shadow" of all 131 monitored bins in five zones (Yard 18 · Raw 22 ·
 3. Material colour and status colour never share a channel.
 4. One accent colour (cyan), only for selection.
 5. Derived sizes are labelled derived; the vertical stretch (1.25× since 2026-09-02, read from `VERTICAL_EXAGGERATION`), the capacity compression and the 1.3 m floor are disclosed in the UI.
-6. The 500 series is in service, absent from the feed; never "unused" or "idle".
-7. Silo positions, arrangements and groupings are the client's. They do not move.
-8. Counts on screen are computed over the 131 monitored bins; the five tanks are drawn and uncounted.
+6. Silo positions, arrangements and groupings are the client's. They do not move.
+7. Counts on screen are over all 131 bins. (The 500-series soya-oil tanks were retired by the client on 2026-09-10 and removed from the model; they were the only bins drawn but not counted.)
 
 ## Constraints
 - Stack pinned: React 18.3, Vite 5, Tailwind 3.4 (hand-written `light:` variant set in `index.css`, ~86 rules, no ring rules), three 0.169, @react-three/fiber 8.18, drei 9.122, @react-three/postprocessing 2.19 + postprocessing 6.39, framer-motion 11, wouter, TanStack Query.

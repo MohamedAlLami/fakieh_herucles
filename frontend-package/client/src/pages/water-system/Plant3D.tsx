@@ -1839,12 +1839,13 @@ export default function Plant3D() {
             color: new THREE.Color(materialColorIn(readings.palette, r?.materialCode)),
             fill: level.fill ?? 0,
             /*
-             * Two reasons to mute a bin: it is not monitored at all (the 500
-             * tanks), or the legend is picking out a different material. The
-             * stronger of the two wins.
+             * One reason left to mute a bin: the legend is picking out a
+             * different material. There used to be a second — a bin nothing
+             * reported on at all — but the 500-series tanks were the only
+             * such group and the client retired them (2026-09-10).
              */
             dim: Math.max(
-              bucket.spec.monitored ? 0 : 0.5,
+              0,
               /* `String(...)` and not `?? ''`: the field is TYPED string | null
                  and the API does not keep that promise — it sends numbers. `??`
                  replaces null and undefined and passes 105 straight through to

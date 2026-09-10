@@ -115,7 +115,7 @@ export interface Zone {
  * capacity-keyed compressed size scale, and every height is stretched — see
  * SIZE_COMPRESSION and VERTICAL_EXAGGERATION in `silos.ts`, both disclosed in
  * the UI. Only the plant's single largest capacity (the 1,600 t 100 and 200
- * series) is drawn at true size; the 500 series, smaller at 160 t, is drawn
+ * series) is drawn at true size; every smaller group is drawn
  * bigger than life like every other group.
  */
 export const ZONES: Zone[] = [
@@ -123,8 +123,8 @@ export const ZONES: Zone[] = [
     id: 'outside',
     label: 'Outside Yard',
     short: 'Yard',
-    description: 'Bulk raw material, flat storage and the liquid tanks, all outside the plant building',
-    series: [100, 200, 500],
+    description: 'Bulk raw material and flat storage, all outside the plant building',
+    series: [100, 200],
     /* Swung toward +X now that the 100 and 200 banks run ACROSS the flow.
        Aimed down the columns they read as a receding line and everything past
        the third bin is small; from here the two columns present broadside.
@@ -292,7 +292,7 @@ export const TRUSS = {
 /**
  * Building shells.
  *
- * Only the process spine is a building. The 100, 200 and 500 series are outdoor
+ * Only the process spine is a building. The 100 and 200 series are outdoor
  * storage and are drawn as what they are - free-standing vessels on open ground -
  * rather than hidden under a shed. The two placeholder shells that stood over
  * them in stage 1 were traced from roof outlines before the silo counts and

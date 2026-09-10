@@ -25,6 +25,7 @@ from routes.orders_history_routes import orders_history_bp
 from routes.data_ingestion import ingestion_bp
 from routes.websocket_routes import websocket_bp, init_socketio
 from routes.sqlserver_routes import sqlserver_bp
+from routes.production_kpi import production_kpi_bp
 from routes.kpi_material_routes import kpi_material_bp
 from routes.kpi_calendar_routes import kpi_calendar_bp
 from routes.distribution_routes import distribution_bp
@@ -134,6 +135,7 @@ app.register_blueprint(ingestion_bp)
 app.register_blueprint(websocket_bp)
 app.register_blueprint(api_bp)
 app.register_blueprint(sqlserver_bp)
+app.register_blueprint(production_kpi_bp)
 app.register_blueprint(kpi_material_bp, url_prefix='/api')
 app.register_blueprint(kpi_calendar_bp, url_prefix='/api')
 app.register_blueprint(distribution_bp)
