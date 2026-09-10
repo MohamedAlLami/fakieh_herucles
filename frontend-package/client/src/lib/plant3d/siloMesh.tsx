@@ -4,7 +4,7 @@
  * Every bin in the plant is now a merged, multi-part `BufferGeometry` — wall,
  * roof, hopper, legs, rings, hatches — assembled per archetype in
  * `siloGeometry.ts` and tagged per-vertex with `aPart` so one shared material
- * can shade every part differently. 136 bins in eleven groups, still one
+ * can shade every part differently. 131 bins in ten groups, still one
  * instanced draw per pass per group.
  *
  * SEEING THE LEVEL
@@ -223,7 +223,7 @@ export function SiloGroupMesh({
    * instances happen to sit in the buffer, and three sorts transparent OBJECTS,
    * not instances — so a bin at the back could paint over one at the front, and
    * the error moved around as you orbited. Sorting the instances by distance
-   * fixes it exactly, and at 136 bins it costs nothing.
+   * fixes it exactly, and at 131 bins it costs nothing.
    *
    * The order is applied to the matrices AND to every per-instance attribute, so
    * all three passes stay in step. It is recomputed only when the camera has

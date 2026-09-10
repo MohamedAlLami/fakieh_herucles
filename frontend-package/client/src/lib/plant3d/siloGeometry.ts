@@ -51,7 +51,7 @@ import {
  * The new roof rings, rails and legs make a low facet count obvious in a way
  * a bare lathe never was, so the plant-wide tiers are coarser at the low end
  * than before (10-28) and step at fixed diameters rather than a linear ramp:
- * 32 from 8 m up (the 100/200/500 series), 24 from 2 m (300/600/800), 16
+ * 32 from 8 m up (the 100/200 series), 24 from 2 m (300/600/800), 16
  * below (400/900 — thirty of the plant's bins are under 2 m across, and even
  * at 16 sides they read as round once the structure is added around them).
  */
@@ -92,7 +92,7 @@ const EAVE_RATIO = 1.02;
 /**
  * How much wider than the barrel the flat-bottomed foundation skirt stands.
  *
- * Only `hopperRatio: 0` groups use this — the 100/200/500 series, the three
+ * Only `hopperRatio: 0` groups use this — the 100/200 series, the two
  * largest-diameter groups on the plant and the only ones with real headroom
  * in their packing (their own pitch clears a 10% skirt with room to spare;
  * see the proof). A hopper-bottomed bin already gets a visible base from its
@@ -483,7 +483,7 @@ function specForDims(d: SiloDims): SiloGroupSpec | null {
  * it explicitly (as `siloMesh.tsx` does) to skip that search.
  *
  * Cached per group id: building the merged geometry is not free, and this is
- * called from an O(n^2) overlap sweep over 136 bins.
+ * called from an O(n^2) overlap sweep over 131 bins.
  */
 export function profileMaxRadius(d: SiloDims, spec?: SiloGroupSpec): number {
   const g = spec ?? specForDims(d);

@@ -68,7 +68,7 @@ export function useSiloReadings(enabled = true): SiloReadings {
 
   /*
    * Memoised together, because every consumer of `byNo` keys a memo on it. A
-   * fresh Map on each render made the scene rewrite all 136 instance colours,
+   * fresh Map on each render made the scene rewrite all 131 instance colours,
    * fills and surface matrices on every pointer move.
    */
   const { byNo, newest, palette } = useMemo(() => {
@@ -117,7 +117,7 @@ export function useSiloReadings(enabled = true): SiloReadings {
 /* ------------------------------------------------------------------ */
 
 /** Why a bin has no level to draw. `null` reason means it does have one. */
-export type NoLevelReason = 'no-tag' | 'not-monitored' | 'no-reading';
+export type NoLevelReason = 'no-tag' | 'no-reading';
 
 export interface SiloLevel {
   /** height fraction 0..1 to shade, or null when nothing may be drawn */
@@ -140,10 +140,6 @@ export interface SiloLevel {
  *    entry). The API still returns a `quantityKg` for those bins, but nothing
  *    ever writes it, so it is stale at best and a dosing figure at worst. It is
  *    never a level and must never be shaded.
- *  - The 500-series is NOT unused. The plant's own SCADA shows 501-504 as
- *    soya oil and 505 as the Term IN-8 line, with live pumps and valves. They
- *    are simply absent from THIS application's feed, which is a gap in what
- *    this view can see and not an idle tank farm.
  *  - Negative quantities are real on this plant (-152.78 and -477.31 have been
  *    seen on the SCADA). The shading clamps at zero; the number does not.
  *  - A quantity above capacity is shown as over-full rather than silently
@@ -159,7 +155,6 @@ export function siloLevel(p: SiloPlacement, r: SiloReading | undefined): SiloLev
     outOfRange: false,
   };
 
-  if (!p.group.monitored) return { ...base, reason: 'not-monitored', quantityKg: null };
   if (!p.group.metered) return { ...base, reason: 'no-tag' };
   if (!r) return { ...base, reason: 'no-reading' };
   if (qty === null || !Number.isFinite(qty)) return { ...base, reason: 'no-reading' };

@@ -156,7 +156,7 @@ export const PostFx = ({ tier }: { tier: PostTier }) => {
    * both a type error and something it would have to reason about.
    */
   const passes = [
-    /* Ambient occlusion: contact grounding for 136+ vessels standing on a
+    /* Ambient occlusion: contact grounding for 131+ vessels standing on a
        flat plane. Second to go under load. Retuned per plan §4.D.5/§6a:
        radius 2.5 (was 6 — the old radius muddied the gaps between banks
        rather than reading as contact), intensity 1.4 (was 2.2), colour

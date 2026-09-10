@@ -148,7 +148,6 @@ async function main() {
         0,
       );
       const expectedCapacityText = silos.formatCapacity(expectedCapacityKg);
-      const notMonitored = silos.SILOS.filter((s) => !s.group.monitored).length;
 
       const summary = {
         bins: expectedTotalBins,
@@ -179,7 +178,6 @@ async function main() {
           'Bins label': '>Bins<',
           'withStock/total': `${summary.withStock}<`,
           'total bins': `/${expectedTotalBins}`,
-          'not-monitored title': `${notMonitored} tanks not in the feed`,
           'Capacity label': '>Capacity<',
           'capacity figure': expectedCapacityText,
           'Stored label': '>Stored<',
@@ -337,7 +335,7 @@ async function main() {
       );
       check('ZoneSwitch prints every zone\'s silo range', () =>
         containsAll(wideHtml, {
-          'Yard (outside)': '101–115 · 201–203 · 501–505',
+          'Yard (outside)': '101–115 · 201–203',
           'Raw': '301–322',
           'Dosing': '401–408 · 901–930',
           'Buffer': '601–605',

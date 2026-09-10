@@ -192,32 +192,27 @@ const HEADER_DIVIDER = 'mx-0.5 h-5 w-px shrink-0 bg-white/15';
  * Read off the model rather than passed in as a prop, so this denominator
  * cannot drift away from the scene it describes.
  *
- * `monitored`, not `SILOS.length`, and the difference is not cosmetic: the
- * model draws 136 bins and this counts 131. The five missing ones are the 500
- * series, the only unmonitored group, which the plant runs soya oil through
- * but reports nothing about. Every other count on this screen — the zone tabs,
- * the status bar's "n / 131" — is already computed over `monitored` bins, so
- * a legend quoting 136 would be the single number on the page disagreeing with
- * all the others, and a reader would have no way to tell which was wrong.
- *
- * It is also the more honest population for THIS statement. Saying "10 of 136
- * tagged" implies five bins could carry a material code and do not; they
- * cannot, because nothing upstream reports on them at all. That is a different
- * fact and it belongs in the provenance note, not in this ratio.
+ * Filtered on `monitored` rather than using `SILOS.length` directly. The two
+ * are the same 131 today — the 500-series liquid tanks, the only unmonitored
+ * group, were retired on the client's instruction (2026-09-10) — but the
+ * filter stays as the statement of intent: this ratio is over bins the plant
+ * actually reports on, and re-adding a group it does not report on must not
+ * silently inflate the denominator.
  */
 const TOTAL_BINS = SILOS.filter((s) => s.group.monitored).length;
 
 /**
- * "301–322", "101–115 · 201–203 · 501–505" — the silo numbers standing under
+ * "301–322", "101–115 · 201–203" — the silo numbers standing under
  * each zone's label in `ZoneSwitch`, so an operator who knows a bin by number
  * can tell which tab it lives under before pressing anything.
  *
  * Computed over EVERY placed bin in the zone, monitored or not — unlike the
  * count badge beside it (`counts`, computed by the caller from `monitored`
  * bins only), the range is a statement about POSITION, not about whether the
- * plant reports on a bin. Leaving the 500 series out of the Yard's range
- * would be wrong in exactly the way leaving it off the drawing would be: it
- * is there, at 501-505, whether or not this view can show a level for it.
+ * plant reports on a bin. The two populations are the same 131 today, since
+ * the 500-series tanks were retired (2026-09-10), but the distinction is kept
+ * deliberately: a bin that stands on the site belongs in the range whether or
+ * not this view can show a level for it.
  *
  * Runs are contiguous silo numbers, not one run per `SiloGroupSpec` — the
  * dosing zone's 401-408 and 901-930 are five groups (400, 900a, 900b, 900c)
@@ -1064,7 +1059,7 @@ export const STATUS_HIGH_THRESHOLD = 0.9;
 /**
  * Which of the four status colours a bin draws in fill-status mode, or
  * `null` for "no data" (the hatched swatch) — a bin with no level to show
- * (400 series, unmonitored, no reading yet) is not zero, it is unknown, and
+ * (400 series, or no reading yet) is not zero, it is unknown, and
  * colouring it as "low" would be a claim about a quantity nobody measured.
  *
  * An alarm overrides the fraction entirely: a bin sitting at 40% with its
@@ -1106,9 +1101,8 @@ const PROVENANCE = [
   'The 400 series has no level. There is no quantity address in the PLC for those bins, so they are never shaded, whatever number the database happens to hold.',
   'Most bins are not colour-coded, and that is the data rather than a fault in the drawing. Only the bins the plant reports a material code for are given a material colour; every other bin is drawn as a neutral vessel rather than being assigned a colour for contents nobody has stated. The count beside the material key says how many of the bins on site are tagged.',
   'The outside yard is schematic. The 100 and 200 series are drawn as cylinders on instruction; in reality they are flat and cellular storage.',
-  'Five bins are drawn but not counted. The 500 series is in service — it runs soya oil — but nothing upstream reports on it, so it appears in the yard and is left out of every count on this screen, all of which are over the 131 bins the plant does report. It is drawn rather than hidden because it is there; it is uncounted rather than shown empty because an empty bar would be a claim about it that nobody has made.',
   'Ladders, stairs, vents, kerbs, trusses and conveyors are typical feed-mill furniture drawn for legibility, not surveyed plant facts.',
-  `Fill-status colours (the "Fill" switch at the left of this dock): below ${Math.round(STATUS_LOW_THRESHOLD * 100)}% of rated capacity reads low, above ${Math.round(STATUS_HIGH_THRESHOLD * 100)}% reads high, everything between reads normal. A high-level or lock alarm always draws as alarm regardless of the fraction. A bin with no level to show — the 400 series, the unmonitored tanks, a bin with no reading yet — draws hatched rather than as any of the four, because "unknown" and "low" are different facts.`,
+  `Fill-status colours (the "Fill" switch at the left of this dock): below ${Math.round(STATUS_LOW_THRESHOLD * 100)}% of rated capacity reads low, above ${Math.round(STATUS_HIGH_THRESHOLD * 100)}% reads high, everything between reads normal. A high-level or lock alarm always draws as alarm regardless of the fraction. A bin with no level to show — the 400 series, or a bin with no reading yet — draws hatched rather than as any of the four, because "unknown" and "low" are different facts.`,
 ].join('\n\n');
 
 /**
@@ -1293,7 +1287,7 @@ export const LegendDock = forwardRef<
             </span>
           ))}
           <span
-            title="No level to show — the 400 series, an unmonitored tank, or a bin with no reading yet"
+            title="No level to show — the 400 series, or a bin with no reading yet"
             className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 py-0.5 text-xs text-slate-400 light:text-gray-500"
           >
             <span
@@ -1486,10 +1480,6 @@ const NO_LEVEL: Record<NoLevelReason, { chip: string; detail: string }> = {
     detail:
       'This bin has no quantity address in the PLC, so the plant never reports a level for it. Any number stored against it is whatever was last written to the row — it is not an inventory figure.',
   },
-  'not-monitored': {
-    chip: 'Not monitored',
-    detail: 'In service on the plant, but its data does not reach this view — see the note below.',
-  },
   'no-reading': { chip: 'No reading', detail: 'The plant returned no reading for this bin.' },
 };
 
@@ -1617,7 +1607,7 @@ export function SiloDetailPanel({
             in the same weight as "this bin has no quantity address at all"
             would flatten two very different facts into one look.
           */}
-          {(level.reason === 'no-tag' || level.reason === 'not-monitored') && noLevel && (
+          {level.reason === 'no-tag' && noLevel && (
             <p className="mt-2 text-[11px] leading-relaxed text-slate-500 light:text-gray-500">
               {noLevel.detail}
             </p>

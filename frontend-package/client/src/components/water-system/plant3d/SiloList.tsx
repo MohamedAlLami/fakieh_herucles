@@ -12,8 +12,8 @@
  * the same KPI strip, finder and rows, sized to whatever height its parent
  * gives it.
  *
- * A plain, ungrouped `.map()` over up to 136 rows, deliberately not
- * virtualised: DESIGN.md allows "virtualised-or-cheap", and 136 simple flex
+ * A plain, ungrouped `.map()` over up to 131 rows, deliberately not
+ * virtualised: DESIGN.md allows "virtualised-or-cheap", and 131 simple flex
  * rows is comfortably cheap for React — no windowing dependency exists in
  * this package, and adding one for a bin count this small would be the kind
  * of mechanism this project's own history warns against building before it
@@ -23,6 +23,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronUp, Lock, RefreshCw, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILOS, type SiloPlacement } from '@/lib/plant3d/silos';
+
+/* Every bin in the model. Since the 500-series tanks were retired
+   (2026-09-10) every group is monitored, so this and the KPI strip's
+   denominator are the same number by construction. */
+const TOTAL_BINS = SILOS.length;
 import {
   OUT_OF_SERVICE,
   materialColorIn,
@@ -45,16 +50,6 @@ import {
   type ColorMode,
   type PlantSummary,
 } from './PlantHud';
-
-/**
- * The plant's own unmonitored bins — the 500-series tanks. Read off the
- * model rather than hardcoded, so this cannot drift out of step with the
- * scene's own count: `summary.bins` is always the 131 monitored bins the KPI
- * strip's "n/131" is over, and a reader seeing "136" in the list right next
- * to a "/131" chip has no way to tell whether that is a typo or a different
- * population, unless the list says so itself.
- */
-const NOT_MONITORED_COUNT = SILOS.filter((s) => !s.group.monitored).length;
 
 export interface SiloListProps {
   /** the bins visible in the current zone — same set the scene draws, so the
@@ -119,7 +114,7 @@ function hhmm(d: Date): string {
 
 /** 6px fill bar; material colour in material mode, status colour in status
     mode; a diagonal hatch on the empty track when the bin has no level to
-    show at all (400 series, unmonitored, no reading). Inline style rather
+    show at all (400 series, or no reading yet). Inline style rather
     than a Tailwind class: this app's `light:` set is a fixed, hand-written
     list (scripts/verify-plant3d.mjs scans for exactly that), and a one-off
     gradient or per-row hex has no business claiming a slot in it. */
@@ -352,8 +347,7 @@ export function SiloList({
       const code = String(reading?.materialCode ?? '').trim();
       const untagged = code === '' || code === OUT_OF_SERVICE;
       const stale = isStale(reading?.updatedAt);
-      const notMonitored = level.reason === 'not-monitored';
-      const displayMaterial = notMonitored ? 'Not monitored' : material;
+      const displayMaterial = material;
       const alarmed = Boolean(reading?.hlActive || reading?.lockActive);
       const category = statusCategoryFor(level.fraction, alarmed);
       /* The colour actually drawn for this row's swatch and fill bar, given
@@ -362,10 +356,8 @@ export function SiloList({
       const color =
         colorMode === 'status'
           ? (category ? STATUS_COLORS[category] : materialColor)
-          : notMonitored
-            ? '#475569'
-            : materialColor;
-      const hatched = notMonitored || (colorMode === 'status' && category === null);
+          : materialColor;
+      const hatched = colorMode === 'status' && category === null;
       return {
         p,
         reading,
@@ -376,7 +368,6 @@ export function SiloList({
         hatched,
         untagged,
         stale,
-        notMonitored,
         alarmed,
       };
     });
@@ -458,16 +449,13 @@ export function SiloList({
       {showKpi && (
       <div className="flex shrink-0 flex-col gap-2 border-b border-slate-800 p-3 light:border-gray-200">
         {/*
-          The list's own header line. This row holds all 136 placed bins —
-          131 monitored plus the 5 unmonitored 500-series tanks, rendered
-          below as "Not monitored" — while every count elsewhere on this
-          screen (the "n/131" chip two rows down included) is over the 131
-          monitored bins alone. Stated once, up front, so "136" here and
-          "131" there read as two different populations rather than as one
-          of them being wrong.
+          The list's own header line. Every bin in the model is monitored
+          since the 500-series tanks were retired (2026-09-10), so this row
+          and the "n/131" chip two rows down are now over the same 131 bins
+          and cannot disagree.
         */}
         <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500 light:text-gray-500">
-          {summary.bins} monitored · {NOT_MONITORED_COUNT} tanks not in the feed
+          {summary.bins} of {TOTAL_BINS} bins holding stock
         </p>
         {/* Freshness dot and the plant's own clock, on one line
             (DESIGN.md's KPI strip spec). */}
@@ -650,7 +638,7 @@ export function SiloList({
           </div>
         )}
         {rows.map(
-          ({ p, reading, level, displayMaterial, color, hatched, untagged, stale, notMonitored }) => {
+          ({ p, reading, level, displayMaterial, color, hatched, untagged, stale }) => {
             const isSelected = selected === p.siloNo;
             const isHovered = hovered === p.siloNo;
             return (
@@ -723,7 +711,7 @@ export function SiloList({
                         aria-label="Out of range"
                       />
                     )}
-                    {untagged && !notMonitored && (
+                    {untagged && (
                       <span
                         className="h-1.5 w-1.5 shrink-0 rounded-full bg-slate-500"
                         title="Untagged bin"
