@@ -324,23 +324,37 @@ def compute_production_kpi(
 
 
 def _tons_by_hour(batches, window_start, window_end):
-    """Tonnage per hour of the window, bucketed by the hour a batch started.
+    """Tonnage per WHOLE CLOCK HOUR overlapping the window.
 
-    Bucketed by start for the same reason tonnage is attributed by start: to
-    agree with the calendar. A batch's weight is never split across two hours;
-    the batching system reports batches, not a continuous rate.
+    Bucketed by the hour a batch started, for the same reason tonnage is
+    attributed by start: to agree with the calendar. A batch's weight is never
+    split across two hours; the batching system reports batches, not a
+    continuous rate.
+
+    The buckets are real clock hours -- 13:00 to 14:00 -- not offsets from the
+    window's opening. A rolling window opens at whatever minute it is now, so
+    offset buckets produced labels like "11:38 to 12:38", which read as though
+    they disagreed with a "first batch start" of 12:30 sitting inside one.
+    Clock hours are what anyone reading a plant screen already thinks in.
+
+    The first and last bucket therefore stick out past the window. Each is
+    reported with its true clock-hour span so the caller can clip it to the
+    window when drawing; the tonnage inside is unaffected, because a batch
+    either started inside the window or was never counted at all.
     """
-    # ceil rather than round: rounding a 2.4 h window down to 2 buckets would
-    # silently drop every batch in the final 24 minutes.
-    total_hours = math.ceil((window_end - window_start).total_seconds() / 3600.0)
+    if window_end <= window_start:
+        return []
+
+    first_hour = window_start.replace(minute=0, second=0, microsecond=0)
+    total_hours = math.ceil((window_end - first_hour).total_seconds() / 3600.0)
     if total_hours <= 0:
         return []
+
     tons = [0.0] * total_hours
     counts = [0] * total_hours
-    # The bucket a batch falls in is an hour wide; the batch itself started at
-    # some moment inside it. Carrying both means the card can say which,
-    # instead of leaving a reader to wonder why "first batch start" sits inside
-    # a bucket labelled with a different time.
+    # The bucket is an hour wide; the batches in it started at particular
+    # moments. Carrying both is what lets the card say "1 batch, started
+    # 12:30 PM" under an hour labelled 12:00.
     first_start = [None] * total_hours
     last_start = [None] * total_hours
 
@@ -350,7 +364,7 @@ def _tons_by_hour(batches, window_start, window_end):
             continue
         if not (window_start <= start < window_end):
             continue
-        idx = int((start - window_start).total_seconds() // 3600)
+        idx = int((start - first_hour).total_seconds() // 3600)
         if 0 <= idx < total_hours:
             tons[idx] += (b.get("actual_kg") or 0.0) / 1000.0
             counts[idx] += 1
@@ -361,7 +375,8 @@ def _tons_by_hour(batches, window_start, window_end):
 
     return [
         {
-            "hour_start": window_start + timedelta(hours=i),
+            "hour_start": first_hour + timedelta(hours=i),
+            "hour_end": first_hour + timedelta(hours=i + 1),
             "tons": round(tons[i], 3),
             "batches": counts[i],
             "first_start": first_start[i],
@@ -567,6 +582,7 @@ def _serialise(kpi: dict) -> dict:
         {
             **h,
             "hour_start": format_db_datetime_utc_iso(h["hour_start"]),
+            "hour_end": format_db_datetime_utc_iso(h["hour_end"]),
             "first_start": format_db_datetime_utc_iso(h["first_start"]),
             "last_start": format_db_datetime_utc_iso(h["last_start"]),
         }

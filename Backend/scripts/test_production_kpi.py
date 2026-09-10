@@ -484,6 +484,55 @@ def test_window_clipping():
     check("empty window: start is null", empty["first_batch_start"], None)
 
 
+def test_clock_hour_buckets():
+    """Buckets are real clock hours, not offsets from a ragged window start."""
+    print("\nhourly buckets")
+    # A window opening at 11:38, which is what a rolling 24 h looks like at
+    # any moment that is not exactly on the hour.
+    ws = datetime(2025, 3, 28, 11, 38)
+    we = ws + timedelta(hours=24)
+    rows = [
+        {
+            "guid": "a",
+            "start": datetime(2025, 3, 28, 12, 30),
+            "end": datetime(2025, 3, 28, 13, 30),
+            "category": "FeedMill_Hammer",
+            "actual_kg": 3000.0,
+            "setpoint_kg": 3000.0,
+            "deviation_kg": 0.0,
+            "on_target_rows": 10,
+            "scored_rows": 10,
+        }
+    ]
+    kpi = compute_production_kpi(rows, ws, we, now=we)
+    buckets = kpi["by_hour"]
+
+    check("every bucket starts on the hour", all(h["hour_start"].minute == 0 for h in buckets), True)
+    check("every bucket is one hour long",
+          all((h["hour_end"] - h["hour_start"]) == timedelta(hours=1) for h in buckets), True)
+    check("the first bucket opens on the hour before the window", buckets[0]["hour_start"],
+          datetime(2025, 3, 28, 11, 0))
+    check("buckets span the ragged window", len(buckets), 25)
+    check("no gaps between buckets",
+          all(buckets[i]["hour_start"] == buckets[i - 1]["hour_end"] for i in range(1, len(buckets))),
+          True)
+
+    holding = [h for h in buckets if h["batches"]]
+    check("the batch lands in its own clock hour", len(holding), 1)
+    check("which is 12:00, not the window's opening minute", holding[0]["hour_start"],
+          datetime(2025, 3, 28, 12, 0))
+    check("and the bucket reports when it really started", holding[0]["first_start"],
+          datetime(2025, 3, 28, 12, 30))
+    check("tonnage still sums to the total", round(sum(h["tons"] for h in buckets), 3), kpi["tons"])
+
+    # A batch outside the window must not be booked to a bucket that overlaps it.
+    early = [dict(rows[0], guid="b", start=datetime(2025, 3, 28, 11, 10),
+                  end=datetime(2025, 3, 28, 11, 30))]
+    kpi2 = compute_production_kpi(early, ws, we, now=we)
+    check("a batch before the window is not booked to the overhanging bucket",
+          sum(h["batches"] for h in kpi2["by_hour"]), 0)
+
+
 def test_outloading_excluded():
     print("\nOutLoading is not production")
     ws = datetime(2025, 3, 28, 4, 0)
@@ -658,6 +707,7 @@ def main():
     test_rollup_sql_shape()
     test_resolve_window()
     test_window_clipping()
+    test_clock_hour_buckets()
     test_outloading_excluded()
     test_against_real_extract()
 
