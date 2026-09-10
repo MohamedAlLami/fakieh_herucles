@@ -36,10 +36,16 @@ Four things about the source data drive the shape of this module.
 Two attribution rules keep this card consistent with the pages beside it:
 
   * TONNAGE follows the batch's START, because that is how /api/kpi_calendar
-    assigns a batch to a production day. A card that disagreed with the Batch
-    Calendar about the same day would be worse than no card.
+    assigns a batch to a production day. A card that put a batch on a
+    different day from the Batch Calendar would be worse than no card.
   * TIME is clipped to the window, so a batch running across the opening edge
     contributes only the part that falls inside it.
+
+That is an agreement about WHICH DAY a batch belongs to, not about totals. The
+totals here are deliberately smaller than the calendar's for the same day: this
+endpoint excludes OutLoading and blank product names, and books nothing for a
+batch that has not finished, while the calendar sums every surviving material
+row. Do not "reconcile" the two by removing those rules.
 
 Everything above the route is pure: it takes batch dicts and a window and
 returns numbers. That is deliberate -- the SQL Server this queries lives on the
@@ -53,6 +59,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
@@ -92,6 +99,8 @@ RUNNING_BATCH_MAX_HOURS = 12
 # The rolling path clamps ?hours; a custom range needs the same ceiling, or one
 # query string can ask for a decade of GROUP BY and a 262,800-entry hour array.
 MAX_WINDOW = timedelta(days=31)
+
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 # --------------------------------------------------------------------------
@@ -188,7 +197,12 @@ def compute_production_kpi(
                 continue
 
             if end is None:
-                effective_end = horizon
+                # Believe a running batch for RUNNING_BATCH_MAX_HOURS from ITS
+                # OWN start, not to the end of the window. Extending an
+                # abandoned row to the horizon let a single un-ended batch from
+                # 30 hours ago paint the whole 24 h as running: 100%
+                # efficiency on a payload that also said zero batches.
+                effective_end = min(horizon, start + timedelta(hours=RUNNING_BATCH_MAX_HOURS))
             elif end < start:
                 # Clock skew between batching servers produces these. A
                 # negative duration is not evidence of anything, so the batch
@@ -352,6 +366,15 @@ def _tons_by_hour(batches, window_start, window_end):
 
 # The WHERE clause here is the T-SQL mirror of batch_matches_window() above.
 #
+# It filters MATERIAL ROWS before GROUP BY, which is only equivalent to
+# filtering batches because [Batch Act Start]/[Batch Act End] come from the
+# vendor's BatchCopy row and are therefore constant across a batch's materials
+# (verified on the captured extract: 0 of 78 batches carry more than one
+# distinct value, and the check suite asserts it). Filtering per row is what
+# every sibling endpoint does and is what lets an index on [Batch Act Start]
+# help; grouping first would mean scanning the table. If that invariant ever
+# breaks, this query starts truncating batches rather than excluding them.
+#
 # The divisor is NULLIF(..., 0) rather than a `WHEN [SetPoint Float] > 0 AND
 # ... / [SetPoint Float]` guard: SQL Server does not promise to evaluate the
 # two sides of an AND inside one WHEN left to right, so the optimiser is free
@@ -406,6 +429,11 @@ def _resolve_window():
     """
     date_str = request.args.get("date")
     if date_str:
+        # production_day_bounds_utc parses date_str[:10], so it would read
+        # "2026-09-10garbage" as a valid day. Be strict about our own input
+        # rather than changing a helper the other endpoints share.
+        if not DATE_RE.fullmatch(date_str):
+            raise ValueError("date must be YYYY-MM-DD")
         start, end = production_day_bounds_utc(date_str)
         return start, end, "production_day"
 
@@ -434,9 +462,14 @@ def _resolve_window():
         return start, end, "custom"
 
     # `or DEFAULT` would swallow hours=0, since 0.0 is falsy; every other
-    # out-of-range value gets clamped, so that one should too.
-    hours = request.args.get("hours", type=float)
-    if hours is None:
+    # out-of-range value gets clamped, so that one should too. And a typo is
+    # rejected rather than answered with a believable 24 hours the caller did
+    # not ask for.
+    if "hours" in request.args:
+        hours = request.args.get("hours", type=float)
+        if hours is None:
+            raise ValueError("hours must be a number")
+    else:
         hours = DEFAULT_WINDOW_HOURS
     hours = min(max(hours, 1.0), MAX_WINDOW.total_seconds() / 3600.0)
     end = datetime.now(UTC).replace(tzinfo=None)
@@ -472,6 +505,17 @@ def get_production_kpi():
         return jsonify(
             {"success": False, "error": "Failed to fetch production KPI", "message": str(exc)}
         ), 500
+
+    # The WHERE clause is meant to be the T-SQL mirror of batch_matches_window.
+    # Applying the Python original to what came back keeps that from being a
+    # claim in a docstring: if the two ever drift, the Python one wins and the
+    # rule the checks exercise is the rule the endpoint enforces.
+    lookback = params["lookback"]
+    rows = [
+        r
+        for r in rows
+        if batch_matches_window(r["act_start"], r["act_end"], window_start, window_end, lookback)
+    ]
 
     batches = [
         {

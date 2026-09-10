@@ -105,7 +105,9 @@ def load_batches(path: str) -> tuple[list[dict], int]:
     dropped = 0
     grouped: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
-        if (row["Product Name"] or "").strip().lower() == "not selected":
+        product = (row["Product Name"] or "").strip()
+        # The same three conditions the query applies, in the same order.
+        if not product or product.lower() == "not selected":
             dropped += 1
             continue
         grouped[row["Batch GUID"]].append(row)
@@ -117,6 +119,10 @@ def load_batches(path: str) -> tuple[list[dict], int]:
         deviation_kg = 0.0
         on_target = 0
         scored = 0
+        starts = [d for d in (parse_dt(m["Batch Act Start"]) for m in materials) if d]
+        ends = [d for d in (parse_dt(m["Batch Act End"]) for m in materials) if d]
+        distinct_starts = len(set(starts))
+        distinct_ends = len(set(ends))
         for m in materials:
             sp = as_float(m["SetPoint Float"]) or 0.0
             av = as_float(m["Actual Value Float"]) or 0.0
@@ -130,10 +136,14 @@ def load_batches(path: str) -> tuple[list[dict], int]:
         batches.append(
             {
                 "guid": guid,
-                "start": parse_dt(materials[0]["Batch Act Start"]),
-                "end": parse_dt(materials[0]["Batch Act End"]),
-                "product": materials[0]["Product Name"],
-                "category": materials[0]["FormulaCategoryName"],
+                "distinct_starts": distinct_starts,
+                "distinct_ends": distinct_ends,
+                # MIN/MAX, as the query does -- not materials[0], which would
+                # hide a batch whose material rows disagreed about its times.
+                "start": min(starts) if starts else None,
+                "end": max(ends) if ends else None,
+                "product": min(m["Product Name"] for m in materials),
+                "category": min(m["FormulaCategoryName"] for m in materials),
                 "actual_kg": actual_kg,
                 "setpoint_kg": setpoint_kg,
                 "deviation_kg": deviation_kg,
@@ -299,8 +309,8 @@ def test_resolve_window():
         round((end - start).total_seconds() / 3600, 3),
         MAX_WINDOW.total_seconds() / 3600,
     )
-    start, end, _ = resolve("/?hours=abc")
-    check("unparseable hours falls back to 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
+    start, end, _ = resolve("/")
+    check("no hours at all is 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
 
     # The window must land where the Batch Calendar would put it. Reading a
     # naive "07:00" as UTC rather than Saudi wall time put this card three
@@ -328,6 +338,10 @@ def test_resolve_window():
     )
     check("an impossible calendar date is rejected", raises("/?date=2026-02-30"), True)
     check("a garbage date is rejected", raises("/?date=garbage"), True)
+    # production_day_bounds_utc parses date_str[:10], so this used to slip past.
+    check("a date with trailing junk is rejected", raises("/?date=2026-09-10garbage"), True)
+    # A typo must not be answered with a believable window nobody asked for.
+    check("unparseable hours is rejected", raises("/?hours=abc"), True)
 
     start, end, mode = resolve("/?date=2025-03-28")
     check("a production day is exactly 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
@@ -430,6 +444,39 @@ def test_window_clipping():
     check("a negative duration contributes no time", kpi["running_hours"], 0.0)
     check("a negative duration keeps its tonnage", kpi["tons"], 3.0, tol=0.001)
 
+    # An abandoned row -- no end, started long before the window. Believing it
+    # to the window horizon painted the whole 24 h as running: 100% efficiency
+    # on a payload that also reported zero batches. It may only be believed for
+    # RUNNING_BATCH_MAX_HOURS from its own start.
+    now = ws + timedelta(hours=24)
+    ghost = [
+        {
+            "guid": "ghost",
+            "start": ws - timedelta(hours=6),
+            "end": None,
+            "category": "FeedMill_Hammer",
+            "actual_kg": 0.0,
+            "setpoint_kg": 0.0,
+            "deviation_kg": 0.0,
+            "on_target_rows": 0,
+            "scored_rows": 0,
+        }
+    ]
+    kpi = compute_production_kpi(ghost, ws, we, now=now)
+    check(
+        "an abandoned batch is believed only to its own cutoff",
+        kpi["running_hours"],
+        float(RUNNING_BATCH_MAX_HOURS - 6),
+        tol=0.001,
+    )
+    check("an abandoned batch cannot fill the window", kpi["availability_pct"] < 100.0, True)
+
+    # ... while a batch that really is running is unaffected by that cap.
+    live = [dict(ghost[0], guid="live", start=now - timedelta(hours=2))]
+    kpi = compute_production_kpi(live, ws, we, now=now)
+    check("a genuinely running batch keeps its time", kpi["running_hours"], 2.0, tol=0.001)
+    check("a genuinely running batch is counted", kpi["batches_running"], 1)
+
     empty = compute_production_kpi([], ws, we, now=we)
     check("empty window: no divide by zero", empty["throughput_tph"], 0.0)
     check("empty window: availability is zero", empty["availability_pct"], 0.0)
@@ -486,6 +533,15 @@ def test_against_real_extract():
     # The extract really does carry placeholder rows, so this filter is load
     # bearing rather than defensive.
     check("the extract contains 'Not Selected' rows to drop", dropped_placeholders > 0, True)
+
+    # BATCH_ROLLUP_SQL filters material rows before GROUP BY, which only equals
+    # filtering batches because the timestamps come from the vendor's per-batch
+    # row and are constant across a batch's materials. Assert the invariant the
+    # query leans on, so a future extract that breaks it fails here.
+    mixed = [
+        b for b in batches if b["distinct_starts"] > 1 or b["distinct_ends"] > 1
+    ]
+    check("batch timestamps are constant across material rows", len(mixed), 0)
     print(f"  loaded {len(batches)} batches from the extract")
     if len(batches) < 50:
         print("CANNOT RUN: extract has fewer batches than expected; is it truncated?")
@@ -615,4 +671,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # A permission error or a malformed extract is "could not run", which
+        # must not share an exit code with "a check failed".
+        print(f"CANNOT RUN: {exc!r}")
+        sys.exit(2)

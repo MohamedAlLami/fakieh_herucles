@@ -147,10 +147,16 @@ export default function ProductionPerformanceCard() {
   // browser or the server actually said is kept for the tooltip.
   const [error, setError] = useState<{ text: string; detail?: string } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const inFlightRef = useRef(false)
 
   const fetchKpi = useCallback(async () => {
-    abortRef.current?.abort()
+    // Skip the tick rather than restarting the request. Aborting the previous
+    // call every 60 s means a query that takes 61 s never finishes once, and
+    // the card sits on its skeleton forever.
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     const controller = new AbortController()
     abortRef.current = controller
     try {
@@ -176,6 +182,7 @@ export default function ProductionPerformanceCard() {
       }
       const { success: _ok, ...data } = body
       setKpi(data)
+      setUpdatedAt(new Date())
       setError(null)
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
@@ -184,6 +191,7 @@ export default function ProductionPerformanceCard() {
         detail: (err as Error).message,
       })
     } finally {
+      inFlightRef.current = false
       if (!controller.signal.aborted) setLoading(false)
     }
   }, [])
@@ -229,7 +237,10 @@ export default function ProductionPerformanceCard() {
       })
     : []
 
-  const hasData = !!kpi && (kpi.batches > 0 || kpi.batches_running > 0)
+  // A batch that ran across the opening edge and finished before any new one
+  // started is real running time with no batch booked to this window.
+  const hasData =
+    !!kpi && (kpi.batches > 0 || kpi.batches_running > 0 || kpi.running_hours > 0)
   const availability = kpi?.availability_pct ?? 0
 
   return (
@@ -456,7 +467,11 @@ export default function ProductionPerformanceCard() {
               title={error.detail}
             >
               <Activity className="h-3.5 w-3.5" />
-              {error.text} Showing no data until it responds.
+              {kpi
+                ? `${error.text} Showing the last figures${
+                    updatedAt ? `, from ${formatClock(updatedAt)}` : ''
+                  }.`
+                : `${error.text} Retrying every minute.`}
             </p>
           ) : !hasData ? (
             <p className="flex items-center gap-2 text-xs text-slate-400 light:text-gray-600 mt-4">
