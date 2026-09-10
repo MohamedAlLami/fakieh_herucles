@@ -33,11 +33,13 @@ from routes.client_routes import client_bp
 from routes.truck_entry_routes import truck_entry_bp
 from routes.ai_routes import ai_bp
 from routes.live_routes import live_bp
+from routes.pallet_report_routes import pallet_report_bp
 # Import models so db.create_all() picks up the new tables (PostgreSQL).
 from models.distribution import DistributionRule, SystemSetting
 from models.client import Client
 from models.truck_weigh_order import TruckWeighOrder
 from models.order_queue import OrderQueue
+from models.pallet_report import PalletReport
 from background_sync import start_silo_sync
 
 app = Flask(__name__)
@@ -139,6 +141,7 @@ app.register_blueprint(client_bp)
 app.register_blueprint(truck_entry_bp)
 app.register_blueprint(ai_bp)
 app.register_blueprint(live_bp)
+app.register_blueprint(pallet_report_bp)
 
 # Boot the Hercules AI live monitor (CSV replay by default; SQL via AI_LIVE_SOURCE).
 try:
@@ -212,6 +215,15 @@ if __name__ == '__main__':
             start_queue_dispatcher(app)
         except Exception as _queue_disp_err:
             print(f"Queue dispatcher not started: {_queue_disp_err}")
+
+        # DB7 pallet historian: one raw PLC snapshot per running line/minute.
+        # APScheduler prevents overlap and the job also holds a PostgreSQL
+        # advisory lock, so duplicate app workers cannot duplicate samples.
+        try:
+            from scheduler import start_pallet_historian
+            start_pallet_historian(app)
+        except Exception as _pallet_sched_err:
+            print(f"Pallet historian not started: {_pallet_sched_err}")
 
         # Always-on PLC broadcast: live plant orders + silo snapshot for the UI.
         # Operators no longer Start/Stop this from Live Orders.

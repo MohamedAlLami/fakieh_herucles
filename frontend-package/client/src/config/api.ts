@@ -65,6 +65,12 @@ export const API_ENDPOINTS = {
   // Reports (Postgres-backed app reports: /daily, /weekly, …)
   REPORTS: '/api/reports',
 
+  PALLET_REPORT: {
+    LIVE: `${API_BASE_URL}/pallet-report/live`,
+    HISTORY: `${API_BASE_URL}/pallet-report/history`,
+    SUMMARY: `${API_BASE_URL}/pallet-report/summary`,
+  },
+
   /** SQL Server BatchMaterials (NFM-style batch reporting) */
   BATCH_KPI: `${API_BASE_URL}/kpi`,
   BATCH_REPORTS_QUERY: `${API_BASE_URL}/reports`,

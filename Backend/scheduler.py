@@ -88,6 +88,20 @@ def _run_queue_dispatch():
             logger.error('Queue dispatch cycle error: %s', e, exc_info=True)
 
 
+def _run_pallet_history():
+    """Collect one DB7 historian sample inside the Flask application context."""
+    if _app is None:
+        return
+    with _app.app_context():
+        try:
+            from services.pallet_report_service import collect_pallet_history
+            collect_pallet_history()
+        except Exception as e:
+            # The interval job must remain registered even after an unexpected
+            # PLC or database failure; the next cycle will retry normally.
+            logger.error('Pallet historian cycle error: %s', e, exc_info=True)
+
+
 def start_queue_dispatcher(app, interval_seconds=None):
     """Register the always-on order-queue dispatcher on an interval.
 
@@ -113,6 +127,30 @@ def start_queue_dispatcher(app, interval_seconds=None):
         misfire_grace_time=30,
     )
     logger.info('Queue dispatcher job registered (every %ss)', interval)
+    return _scheduler
+
+
+def start_pallet_historian(app, interval_seconds=None):
+    """Register the DB7 pallet historian on the shared APScheduler instance."""
+    global _scheduler, _app
+    _app = app
+    if _scheduler is None:
+        _scheduler = BackgroundScheduler(daemon=True)
+        _scheduler.start()
+        logger.info('Scheduler started (for pallet historian)')
+
+    interval = interval_seconds or float(os.getenv('PALLET_HISTORY_INTERVAL_SEC', '60'))
+    _scheduler.add_job(
+        _run_pallet_history,
+        trigger='interval',
+        seconds=interval,
+        id='pallet_history',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=max(30, int(interval)),
+    )
+    logger.info('Pallet historian job started (every %ss)', interval)
     return _scheduler
 
 

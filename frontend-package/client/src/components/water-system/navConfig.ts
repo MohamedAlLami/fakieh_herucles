@@ -15,6 +15,7 @@ import {
   Users,
   Sparkles,
   Boxes,
+  PackageSearch,
 } from 'lucide-react'
 
 export interface SidebarNavItem {
@@ -120,6 +121,12 @@ const fakiehReportingItems: SidebarNavItem[] = [
     label: 'Historical reports',
     description: 'Summaries, weekly, monthly, daily, material usage',
   },
+  {
+    path: '/fakieh/pallet-report',
+    icon: PackageSearch,
+    label: 'Pallet Report',
+    description: 'Live DB7 pallet status and historian',
+  },
 ]
 
 /** Sidebar navigation entries */
@@ -210,6 +217,7 @@ export const topNavItems: TopNavItem[] = [
       { path: '/fakieh/batch-calendar', label: 'Batch calendar' },
       { path: '/fakieh/batch-raw-data', label: 'Raw data' },
       { path: '/fakieh/batch-historical-reports', label: 'Historical reports' },
+      { path: '/fakieh/pallet-report', label: 'Pallet Report' },
     ],
   },
   {

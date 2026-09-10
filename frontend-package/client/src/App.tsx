@@ -57,6 +57,9 @@ const BatchHistoricalReports = lazy(() =>
 const BatchRawDataPage = lazy(() =>
   import("./pages/water-system/BatchRawDataPage").then((m) => ({ default: m.BatchRawDataPage }))
 );
+const PalletReport = lazy(() =>
+  import("./pages/water-system/PalletReport").then((m) => ({ default: m.PalletReport }))
+);
 const Distribution = lazy(() =>
   import("./pages/water-system/Distribution").then((m) => ({ default: m.Distribution }))
 );
@@ -132,6 +135,7 @@ function Router() {
       <Route path="/fakieh/batch-calendar" component={BatchCalendarPage} />
       <Route path="/fakieh/batch-historical-reports" component={BatchHistoricalReports} />
       <Route path="/fakieh/batch-raw-data" component={BatchRawDataPage} />
+      <Route path="/fakieh/pallet-report" component={PalletReport} />
 
       {/* Catch all - redirect to Fakieh */}
       <Route>
@@ -156,6 +160,7 @@ const ROUTE_NAMES: Array<[string, string]> = [
   ['/fakieh/order-history', 'Order history'],
   ['/fakieh/weighbridge', 'Weighbridge'],
   ['/fakieh/production', 'Production'],
+  ['/fakieh/pallet-report', 'Pallet Report'],
 ];
 
 function RoutedErrorBoundary() {
