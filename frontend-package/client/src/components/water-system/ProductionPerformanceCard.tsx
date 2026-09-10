@@ -44,7 +44,14 @@ export interface ProductionKpi {
   dosing_accuracy_pct: number | null
   concurrency: number | null
   timeline: Array<{ start: string | null; end: string | null }>
-  by_hour: Array<{ hour_start: string | null; tons: number; batches: number }>
+  by_hour: Array<{
+    hour_start: string | null
+    tons: number
+    batches: number
+    /** When the batches in this hour actually started, which is not the hour label. */
+    first_start: string | null
+    last_start: string | null
+  }>
   non_production: { categories: string[]; batches: number; tons: number }
 }
 
@@ -394,8 +401,16 @@ export default function ProductionPerformanceCard() {
                   Clamped away from the edges so it cannot leave the card. */}
               {hover ? (
                 <div
-                  className="pointer-events-none absolute bottom-full mb-2 z-20 -translate-x-1/2 rounded-md border border-slate-700 light:border-gray-200 bg-slate-900 light:bg-white px-2.5 py-1.5 shadow-lg light:shadow-xl whitespace-nowrap"
-                  style={{ left: `${Math.min(Math.max(hover.pct, 5), 95)}%` }}
+                  className="pointer-events-none absolute bottom-full mb-2 z-20 rounded-md border border-slate-700 light:border-gray-200 bg-slate-900 light:bg-white px-2.5 py-1.5 shadow-lg light:shadow-xl whitespace-nowrap"
+                  // Shifting by its own width in proportion to how far along
+                  // the axis the anchor sits: left-aligned at 0%, centred at
+                  // 50%, right-aligned at 100%. The tooltip therefore tracks
+                  // the bar without a fixed clamp that could still overflow
+                  // once the text grows.
+                  style={{
+                    left: `${hover.pct}%`,
+                    transform: `translateX(-${hover.pct}%)`,
+                  }}
                 >
                   <p className="text-xs font-semibold text-white light:text-gray-900">{hover.title}</p>
                   {hover.lines.map((line, i) => (
@@ -426,7 +441,16 @@ export default function ProductionPerformanceCard() {
                     peakHour > 0 ? Math.max((tons / peakHour) * 100, tons > 0 ? 6 : 0) : 0
                   const total = byHour.length || 24
                   const pct = ((i + 0.5) / total) * 100
-                  const label = hourRangeLabel(h?.hour_start)
+                  const label = `Hour ${hourRangeLabel(h?.hour_start)}`
+                  // The bar covers an hour; the batches inside it started at
+                  // particular moments. Saying both stops the hour label from
+                  // looking like it contradicts "first batch start" above.
+                  const startedAt =
+                    h?.first_start && h?.last_start
+                      ? h.first_start === h.last_start
+                        ? `started ${formatClock(h.first_start)}`
+                        : `started ${formatClock(h.first_start)} - ${formatClock(h.last_start)}`
+                      : null
                   const active = hover?.key === `bar-${i}`
                   // Only hours that produced something are worth a tab stop.
                   const focusable = batches > 0 || tons > 0
@@ -437,7 +461,9 @@ export default function ProductionPerformanceCard() {
                       title: label,
                       lines: [
                         `${tons.toFixed(2)} t produced`,
-                        `${batches} batch${batches === 1 ? '' : 'es'} started`,
+                        `${batches} batch${batches === 1 ? '' : 'es'}${
+                          startedAt ? `, ${startedAt}` : ''
+                        }`,
                       ],
                     })
                   return (

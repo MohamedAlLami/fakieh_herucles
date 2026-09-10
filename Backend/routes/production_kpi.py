@@ -337,6 +337,12 @@ def _tons_by_hour(batches, window_start, window_end):
         return []
     tons = [0.0] * total_hours
     counts = [0] * total_hours
+    # The bucket a batch falls in is an hour wide; the batch itself started at
+    # some moment inside it. Carrying both means the card can say which,
+    # instead of leaving a reader to wonder why "first batch start" sits inside
+    # a bucket labelled with a different time.
+    first_start = [None] * total_hours
+    last_start = [None] * total_hours
 
     for b in batches:
         start, end = b.get("start"), b.get("end")
@@ -348,12 +354,18 @@ def _tons_by_hour(batches, window_start, window_end):
         if 0 <= idx < total_hours:
             tons[idx] += (b.get("actual_kg") or 0.0) / 1000.0
             counts[idx] += 1
+            if first_start[idx] is None or start < first_start[idx]:
+                first_start[idx] = start
+            if last_start[idx] is None or start > last_start[idx]:
+                last_start[idx] = start
 
     return [
         {
             "hour_start": window_start + timedelta(hours=i),
             "tons": round(tons[i], 3),
             "batches": counts[i],
+            "first_start": first_start[i],
+            "last_start": last_start[i],
         }
         for i in range(total_hours)
     ]
@@ -552,6 +564,12 @@ def _serialise(kpi: dict) -> dict:
         for s, e in kpi["timeline"]
     ]
     out["by_hour"] = [
-        {**h, "hour_start": format_db_datetime_utc_iso(h["hour_start"])} for h in kpi["by_hour"]
+        {
+            **h,
+            "hour_start": format_db_datetime_utc_iso(h["hour_start"]),
+            "first_start": format_db_datetime_utc_iso(h["first_start"]),
+            "last_start": format_db_datetime_utc_iso(h["last_start"]),
+        }
+        for h in kpi["by_hour"]
     ]
     return out
