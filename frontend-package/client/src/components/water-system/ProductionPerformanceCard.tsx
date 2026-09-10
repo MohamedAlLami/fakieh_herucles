@@ -46,6 +46,8 @@ export interface ProductionKpi {
   timeline: Array<{ start: string | null; end: string | null }>
   by_hour: Array<{
     hour_start: string | null
+    /** the end of the clock hour this bucket covers */
+    hour_end: string | null
     tons: number
     batches: number
     /** When the batches in this hour actually started, which is not the hour label. */
@@ -251,13 +253,35 @@ export default function ProductionPerformanceCard() {
   const peakHour = byHour.reduce((max, h) => Math.max(max, h.tons), 0)
   const busiest = peakHour > 0 ? byHour.find((h) => h.tons === peakHour) ?? null : null
 
-  // Axis ticks every three hours, labelled in plant time.
-  const ticks = windowStart
-    ? Array.from({ length: 9 }, (_, i) => {
-        const at = new Date(windowStart.getTime() + (windowMs * i) / 8)
-        return { pct: (i / 8) * 100, label: axisFmt.format(at) }
-      })
-    : []
+  /*
+   * Each bucket is a whole clock hour, so it is placed by TIME rather than by
+   * index: the first and last overhang a rolling window and are clipped to it,
+   * which is what keeps these bars in step with the running ribbon below them.
+   */
+  const bars = byHour
+    .map((h, i) => {
+      const from = parseUtcDate(h.hour_start)
+      const to = parseUtcDate(h.hour_end)
+      if (!from || !to || !windowStart) return null
+      const left = Math.max(0, Math.min(100, pct(from)))
+      const right = Math.max(0, Math.min(100, pct(to)))
+      if (right <= left) return null
+      return { h, i, left, width: right - left }
+    })
+    .filter(Boolean) as Array<{
+    h: (typeof byHour)[number]
+    i: number
+    left: number
+    width: number
+  }>
+
+  // Ticks on the hour, thinned so they never crowd: every third bucket edge.
+  const ticks = bars
+    .filter((b) => b.i % 3 === 0)
+    .map((b) => ({
+      pct: b.left,
+      label: axisFmt.format(parseUtcDate(b.h.hour_start) as Date),
+    }))
 
   // A batch that ran across the opening edge and finished before any new one
   // started is real running time with no batch booked to this window.
@@ -425,7 +449,7 @@ export default function ProductionPerformanceCard() {
               ) : null}
 
               <div
-                className="flex items-end gap-[2px] h-16"
+                className="relative h-16"
                 role="group"
                 aria-label={
                   hasData
@@ -434,19 +458,17 @@ export default function ProductionPerformanceCard() {
                     : 'Tonnage per hour. No batches recorded in the last 24 hours.'
                 }
               >
-                {(byHour.length ? byHour : Array.from({ length: 24 }, () => null)).map((h, i) => {
-                  const tons = h?.tons ?? 0
-                  const batches = h?.batches ?? 0
+                {bars.map(({ h, i, left, width }) => {
+                  const tons = h.tons
+                  const batches = h.batches
                   const height =
                     peakHour > 0 ? Math.max((tons / peakHour) * 100, tons > 0 ? 6 : 0) : 0
-                  const total = byHour.length || 24
-                  const pct = ((i + 0.5) / total) * 100
-                  const label = `Hour ${hourRangeLabel(h?.hour_start)}`
+                  const label = `Hour ${hourRangeLabel(h.hour_start)}`
                   // The bar covers an hour; the batches inside it started at
                   // particular moments. Saying both stops the hour label from
                   // looking like it contradicts "first batch start" above.
                   const startedAt =
-                    h?.first_start && h?.last_start
+                    h.first_start && h.last_start
                       ? h.first_start === h.last_start
                         ? `started ${formatClock(h.first_start)}`
                         : `started ${formatClock(h.first_start)} - ${formatClock(h.last_start)}`
@@ -457,7 +479,7 @@ export default function ProductionPerformanceCard() {
                   const show = () =>
                     setHover({
                       key: `bar-${i}`,
-                      pct,
+                      pct: left + width / 2,
                       title: label,
                       lines: [
                         `${tons.toFixed(2)} t produced`,
@@ -469,11 +491,15 @@ export default function ProductionPerformanceCard() {
                   return (
                     <div
                       key={i}
-                      className={`flex-1 h-full flex items-end rounded-sm overflow-hidden cursor-default transition-colors ${
+                      className={`absolute inset-y-0 flex items-end rounded-sm overflow-hidden cursor-default transition-colors ${
                         active
                           ? 'bg-slate-800 light:bg-gray-200'
                           : 'bg-slate-900/40 light:bg-gray-100'
                       }`}
+                      style={{
+                        left: `${left}%`,
+                        width: `calc(${width}% - 2px)`,
+                      }}
                       onMouseEnter={show}
                       onTouchStart={show}
                       onFocus={focusable ? show : undefined}
