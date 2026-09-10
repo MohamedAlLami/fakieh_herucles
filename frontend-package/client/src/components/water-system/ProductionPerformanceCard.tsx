@@ -72,9 +72,10 @@ const dayFmt = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
 })
 
-const hourFmt = new Intl.DateTimeFormat('en-US', {
+const axisFmt = new Intl.DateTimeFormat('en-US', {
   timeZone: BUSINESS_TZ,
   hour: '2-digit',
+  minute: '2-digit',
   hour12: false,
 })
 
@@ -86,6 +87,14 @@ function formatClock(value: string | Date | null | undefined): string {
 function formatDay(iso: string | null | undefined): string {
   const d = parseUtcDate(iso)
   return d ? dayFmt.format(d) : ''
+}
+
+/** "01:00 PM - 02:00 PM" for the hour a bucket covers. */
+function hourRangeLabel(iso: string | null | undefined): string {
+  const start = parseUtcDate(iso)
+  if (!start) return 'No data'
+  const end = new Date(start.getTime() + 3600000)
+  return `${timeFmt.format(start)} - ${timeFmt.format(end)}`
 }
 
 function formatHours(hours: number | null | undefined): string {
@@ -148,6 +157,12 @@ export default function ProductionPerformanceCard() {
   const [error, setError] = useState<{ text: string; detail?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
+  const [hover, setHover] = useState<{
+    key: string
+    pct: number
+    title: string
+    lines: string[]
+  } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const inFlightRef = useRef(false)
 
@@ -233,7 +248,7 @@ export default function ProductionPerformanceCard() {
   const ticks = windowStart
     ? Array.from({ length: 9 }, (_, i) => {
         const at = new Date(windowStart.getTime() + (windowMs * i) / 8)
-        return { pct: (i / 8) * 100, label: `${hourFmt.format(at)}:00` }
+        return { pct: (i / 8) * 100, label: axisFmt.format(at) }
       })
     : []
 
@@ -374,55 +389,116 @@ export default function ProductionPerformanceCard() {
               </span>
             </div>
 
-            <div
-              className="flex items-end gap-[2px] h-16"
-              role="img"
-              // role="img" hides the 24 bars from assistive tech, so this
-              // sentence has to say what the bars say.
-              aria-label={
-                hasData
-                  ? `Tonnage produced per hour over the last 24 hours. ` +
-                    `${(kpi?.tons ?? 0).toFixed(1)} tonnes in ${kpi?.batches ?? 0} batches. ` +
-                    (busiest
-                      ? `Busiest hour ${formatClock(busiest.hour_start)} with ${busiest.tons.toFixed(1)} tonnes.`
-                      : '')
-                  : 'Tonnage per hour. No batches recorded in the last 24 hours.'
-              }
-            >
-              {(byHour.length ? byHour : Array.from({ length: 24 }, () => null)).map((h, i) => {
-                const tons = h?.tons ?? 0
-                const height = peakHour > 0 ? Math.max((tons / peakHour) * 100, tons > 0 ? 6 : 0) : 0
-                return (
-                  <div
-                    key={i}
-                    className="flex-1 h-full flex items-end bg-slate-900/40 light:bg-gray-100 rounded-sm overflow-hidden"
-                    title={
-                      h?.hour_start
-                        ? `${formatClock(h.hour_start)} — ${tons.toFixed(2)} t, ${h.batches} batch${
-                            h.batches === 1 ? '' : 'es'
-                          }`
-                        : 'No data'
-                    }
-                  >
-                    <div
-                      className="w-full bg-cyan-500/70 rounded-sm transition-all duration-500"
-                      style={{ height: `${height}%` }}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Running/idle ribbon on the same axis */}
-            <div className="relative h-2.5 mt-2 rounded-full bg-slate-900/60 light:bg-gray-200 overflow-hidden">
-              {runBlocks.map((b, i) => (
+            <div className="relative" onMouseLeave={() => setHover(null)}>
+              {/* One tooltip for both rows, anchored to whatever is hovered.
+                  Clamped away from the edges so it cannot leave the card. */}
+              {hover ? (
                 <div
-                  key={i}
-                  className="absolute inset-y-0 bg-cyan-500 rounded-full"
-                  style={{ left: `${b.left}%`, width: `${b.width}%` }}
-                  title={`Running ${formatClock(b.s)} → ${formatClock(b.e)}`}
-                />
-              ))}
+                  className="pointer-events-none absolute bottom-full mb-2 z-20 -translate-x-1/2 rounded-md border border-slate-700 light:border-gray-200 bg-slate-900 light:bg-white px-2.5 py-1.5 shadow-lg light:shadow-xl whitespace-nowrap"
+                  style={{ left: `${Math.min(Math.max(hover.pct, 5), 95)}%` }}
+                >
+                  <p className="text-xs font-semibold text-white light:text-gray-900">{hover.title}</p>
+                  {hover.lines.map((line, i) => (
+                    <p
+                      key={i}
+                      className="text-[11px] text-slate-400 light:text-gray-600 tabular-nums"
+                    >
+                      {line}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+
+              <div
+                className="flex items-end gap-[2px] h-16"
+                role="group"
+                aria-label={
+                  hasData
+                    ? `Tonnage produced per hour over the last 24 hours. ` +
+                      `${(kpi?.tons ?? 0).toFixed(1)} tonnes in ${kpi?.batches ?? 0} batches.`
+                    : 'Tonnage per hour. No batches recorded in the last 24 hours.'
+                }
+              >
+                {(byHour.length ? byHour : Array.from({ length: 24 }, () => null)).map((h, i) => {
+                  const tons = h?.tons ?? 0
+                  const batches = h?.batches ?? 0
+                  const height =
+                    peakHour > 0 ? Math.max((tons / peakHour) * 100, tons > 0 ? 6 : 0) : 0
+                  const total = byHour.length || 24
+                  const pct = ((i + 0.5) / total) * 100
+                  const label = hourRangeLabel(h?.hour_start)
+                  const active = hover?.key === `bar-${i}`
+                  // Only hours that produced something are worth a tab stop.
+                  const focusable = batches > 0 || tons > 0
+                  const show = () =>
+                    setHover({
+                      key: `bar-${i}`,
+                      pct,
+                      title: label,
+                      lines: [
+                        `${tons.toFixed(2)} t produced`,
+                        `${batches} batch${batches === 1 ? '' : 'es'} started`,
+                      ],
+                    })
+                  return (
+                    <div
+                      key={i}
+                      className={`flex-1 h-full flex items-end rounded-sm overflow-hidden cursor-default transition-colors ${
+                        active
+                          ? 'bg-slate-800 light:bg-gray-200'
+                          : 'bg-slate-900/40 light:bg-gray-100'
+                      }`}
+                      onMouseEnter={show}
+                      onTouchStart={show}
+                      onFocus={focusable ? show : undefined}
+                      onBlur={() => setHover(null)}
+                      tabIndex={focusable ? 0 : undefined}
+                      role={focusable ? 'img' : undefined}
+                      aria-label={
+                        focusable
+                          ? `${label}: ${tons.toFixed(2)} tonnes, ${batches} batch${
+                              batches === 1 ? '' : 'es'
+                            }`
+                          : undefined
+                      }
+                    >
+                      <div
+                        className={`w-full rounded-sm transition-all duration-300 ${
+                          active ? 'bg-cyan-400' : 'bg-cyan-500/70'
+                        }`}
+                        style={{ height: `${height}%` }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Running/idle ribbon on the same axis */}
+              <div className="relative h-2.5 mt-2 rounded-full bg-slate-900/60 light:bg-gray-200 overflow-hidden">
+                {runBlocks.map((b, i) => {
+                  const active = hover?.key === `run-${i}`
+                  const show = () =>
+                    setHover({
+                      key: `run-${i}`,
+                      pct: b.left + b.width / 2,
+                      title: `Running ${formatClock(b.s)} - ${formatClock(b.e)}`,
+                      lines: [
+                        `${formatHours((b.e.getTime() - b.s.getTime()) / 3600000)} without a stop`,
+                      ],
+                    })
+                  return (
+                    <div
+                      key={i}
+                      className={`absolute inset-y-0 rounded-full cursor-default transition-colors ${
+                        active ? 'bg-cyan-300' : 'bg-cyan-500'
+                      }`}
+                      style={{ left: `${b.left}%`, width: `${b.width}%` }}
+                      onMouseEnter={show}
+                      onTouchStart={show}
+                    />
+                  )
+                })}
+              </div>
             </div>
 
             <div className="relative h-4 mt-1">
