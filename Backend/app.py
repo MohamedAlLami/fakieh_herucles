@@ -40,6 +40,7 @@ from models.client import Client
 from models.truck_weigh_order import TruckWeighOrder
 from models.order_queue import OrderQueue
 from models.pallet_report import PalletReport
+from models.pallet_order import PalletOrder, PalletOrderMovement, PalletOrderSequence
 from background_sync import start_silo_sync
 
 app = Flask(__name__)
@@ -216,14 +217,13 @@ if __name__ == '__main__':
         except Exception as _queue_disp_err:
             print(f"Queue dispatcher not started: {_queue_disp_err}")
 
-        # DB7 pallet historian: one raw PLC snapshot per running line/minute.
-        # APScheduler prevents overlap and the job also holds a PostgreSQL
-        # advisory lock, so duplicate app workers cannot duplicate samples.
+        # DB7 event monitor: translates running/selection changes into
+        # restart-safe pallet orders without writing periodic sample rows.
         try:
-            from scheduler import start_pallet_historian
-            start_pallet_historian(app)
+            from scheduler import start_pallet_order_monitor
+            start_pallet_order_monitor(app)
         except Exception as _pallet_sched_err:
-            print(f"Pallet historian not started: {_pallet_sched_err}")
+            print(f"Pallet order monitor not started: {_pallet_sched_err}")
 
         # Always-on PLC broadcast: live plant orders + silo snapshot for the UI.
         # Operators no longer Start/Stop this from Live Orders.

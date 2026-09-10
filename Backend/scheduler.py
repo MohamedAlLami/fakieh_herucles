@@ -88,18 +88,18 @@ def _run_queue_dispatch():
             logger.error('Queue dispatch cycle error: %s', e, exc_info=True)
 
 
-def _run_pallet_history():
-    """Collect one DB7 historian sample inside the Flask application context."""
+def _run_pallet_order_monitor():
+    """Apply current DB7 states to restart-safe event orders."""
     if _app is None:
         return
     with _app.app_context():
         try:
-            from services.pallet_report_service import collect_pallet_history
-            collect_pallet_history()
+            from services.pallet_order_service import monitor_pallet_orders
+            monitor_pallet_orders()
         except Exception as e:
             # The interval job must remain registered even after an unexpected
             # PLC or database failure; the next cycle will retry normally.
-            logger.error('Pallet historian cycle error: %s', e, exc_info=True)
+            logger.error('Pallet order monitor cycle error: %s', e, exc_info=True)
 
 
 def start_queue_dispatcher(app, interval_seconds=None):
@@ -130,27 +130,27 @@ def start_queue_dispatcher(app, interval_seconds=None):
     return _scheduler
 
 
-def start_pallet_historian(app, interval_seconds=None):
-    """Register the DB7 pallet historian on the shared APScheduler instance."""
+def start_pallet_order_monitor(app, interval_seconds=None):
+    """Register the fast DB7 event monitor on the shared scheduler."""
     global _scheduler, _app
     _app = app
     if _scheduler is None:
         _scheduler = BackgroundScheduler(daemon=True)
         _scheduler.start()
-        logger.info('Scheduler started (for pallet historian)')
+        logger.info('Scheduler started (for pallet order monitor)')
 
-    interval = interval_seconds or float(os.getenv('PALLET_HISTORY_INTERVAL_SEC', '60'))
+    interval = interval_seconds or float(os.getenv('PALLET_MONITOR_INTERVAL_SEC', '2'))
     _scheduler.add_job(
-        _run_pallet_history,
+        _run_pallet_order_monitor,
         trigger='interval',
         seconds=interval,
-        id='pallet_history',
+        id='pallet_order_monitor',
         replace_existing=True,
         max_instances=1,
         coalesce=True,
         misfire_grace_time=max(30, int(interval)),
     )
-    logger.info('Pallet historian job started (every %ss)', interval)
+    logger.info('Pallet order monitor started (every %ss)', interval)
     return _scheduler
 
 

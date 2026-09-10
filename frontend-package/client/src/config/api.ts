@@ -67,7 +67,7 @@ export const API_ENDPOINTS = {
 
   PALLET_REPORT: {
     LIVE: `${API_BASE_URL}/pallet-report/live`,
-    HISTORY: `${API_BASE_URL}/pallet-report/history`,
+    HISTORY: `${API_BASE_URL}/pallet-report/orders`,
     SUMMARY: `${API_BASE_URL}/pallet-report/summary`,
   },
 
