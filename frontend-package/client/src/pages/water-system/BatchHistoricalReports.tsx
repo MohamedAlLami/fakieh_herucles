@@ -390,7 +390,7 @@ export function BatchHistoricalReports() {
       // Format the data to ensure all required properties are properly mapped (like old code)
       const formattedData = data.map((item: any) => ({
         // Map the API response fields to the expected property names
-        batchName: item["Batch Name"] || item.batchName || "Unknown",
+        batchName: item["Batch  Name"] || item.batchName || "Unknown",
         batchGuid: item["Batch GUID"] || item.batchGuid || "Unknown",
         productName: item["Product Name"] || item.productName || "Unknown",
         productCode: item["ProductCode"] || item.productCode || "",
@@ -655,7 +655,7 @@ export function BatchHistoricalReports() {
         rows && rows.length > 0
           ? rows.map((item: any) => ({
               batchGuid: item["Batch GUID"] || "Unknown",
-              batchName: item["Batch Name"] || "Unknown",
+              batchName: item["Batch  Name"] || "Unknown",
               batchStart: item["Batch Act Start"] || "N/A",
               batchEnd: item["Batch Act End"] || "N/A",
               productName: item["Product Name"] || "Unknown",
@@ -1239,7 +1239,7 @@ export function BatchHistoricalReports() {
   const getTableHeaders = (tabName: string) => {
     switch (tabName) {
       case "Product Batch Summary":
-        return ["Batch Name", "Product Code", "Product Name", "Batch Start", "Batch End", "Batch Quantity"];
+        return ["Batch  Name", "Product Code", "Product Name", "Batch Start", "Batch End", "Batch Quantity"];
       case "Weekly":
       case "Monthly":
       case "Daily Report":
@@ -1586,7 +1586,7 @@ export function BatchHistoricalReports() {
 
   const mapExportCellValue = (item: Record<string, unknown>, header: string): string => {
     switch (header) {
-      case 'Batch Name':
+      case 'Batch  Name':
         return String(item.batchName || '');
       case 'Product Name':
         return String(item.productName || '');
@@ -1669,7 +1669,7 @@ export function BatchHistoricalReports() {
 
     if (totals.kind === 'batchSummary') {
       return headers.map((header) => {
-        if (header === 'Batch Name') return { header, value: totals.label };
+        if (header === 'Batch  Name') return { header, value: totals.label };
         if (header === 'Batch Quantity') return { header, value: totals.totalQuantity.toFixed(2) };
         return { header, value: '' };
       });
@@ -2207,7 +2207,7 @@ export function BatchHistoricalReports() {
             let cellClass = '';
             
             switch (header) {
-              case 'Batch Name':
+              case 'Batch  Name':
                 value = item.batchName || '';
                 break;
               case 'Product Name':
