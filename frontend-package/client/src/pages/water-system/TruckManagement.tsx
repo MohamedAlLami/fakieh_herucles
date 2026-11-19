@@ -4,7 +4,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Plus, Eye, Pencil, Trash2, X, Truck, Users, Wrench, Scale } from 'lucide-react'
+import { Plus, Eye, Pencil, Trash2, X, Truck, Users, Wrench, Scale, Printer, FileSpreadsheet } from 'lucide-react'
+import { printTable } from '../../utils/printTable'
+import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
 
 interface Truck {
   id: number
@@ -83,6 +85,7 @@ export default function TruckManagement({
   }, [section])
 
   const [search, setSearch] = useState('')
+  const [listError, setListError] = useState<string | null>(null)
 
   const [truckData, setTruckData] = useState<Truck[]>([])
   const [driverData, setDriverData] = useState<Driver[]>([])
@@ -303,6 +306,45 @@ export default function TruckManagement({
     })
   }, [truckData, search])
 
+  // Print / Excel of the list on screen (trucks after the search, or all drivers), without the action buttons.
+  const truckColumns: ExportColumn<Truck>[] = [
+    { header: 'License Plate', cell: (t) => t.license },
+    { header: 'Model', cell: (t) => t.model },
+    { header: 'Year', cell: (t) => t.year },
+    { header: 'Capacity', cell: (t) => t.capacity },
+    { header: 'Owner Company', cell: (t) => t.company },
+    { header: 'Contact', cell: (t) => t.contact },
+  ]
+  const driverColumns: ExportColumn<Driver>[] = [
+    { header: 'Name', cell: (d) => d.name },
+    { header: 'RFID', cell: (d) => d.rfid },
+    { header: 'License No.', cell: (d) => d.license_no },
+    { header: 'Contact', cell: (d) => d.contact },
+    { header: 'Assigned Truck', cell: (d) => d.assigned_truck },
+    { header: 'Status', cell: (d) => d.status },
+  ]
+  const isTrucks = activeTab === 'trucks'
+  const listRowCount = isTrucks ? filteredTrucks.length : driverData.length
+  const listTitle = isTrucks ? 'Trucks' : 'Drivers'
+  const listSubtitles = () => {
+    const sub = [`${listRowCount} ${listTitle.toLowerCase()}`]
+    if (isTrucks && search.trim()) sub.push(`Search: ${search.trim()}`)
+    return sub
+  }
+  async function handleListPrint() {
+    const err = isTrucks
+      ? await printTable({ title: listTitle, subtitles: listSubtitles(), columns: truckColumns, rows: filteredTrucks })
+      : await printTable({ title: listTitle, subtitles: listSubtitles(), columns: driverColumns, rows: driverData })
+    setListError(err)
+  }
+  async function handleListExcel() {
+    const err = isTrucks
+      ? await exportTableToExcel({ title: listTitle, subtitles: listSubtitles(), columns: truckColumns, rows: filteredTrucks, filename: 'trucks', sheetName: 'Trucks' })
+      : await exportTableToExcel({ title: listTitle, subtitles: listSubtitles(), columns: driverColumns, rows: driverData, filename: 'drivers', sheetName: 'Drivers' })
+    setListError(err)
+  }
+  const listButtonClass = 'mr-2 border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100'
+
   return (
     <>
       <div className="p-6 space-y-6 truck-management-container">
@@ -347,6 +389,28 @@ export default function TruckManagement({
         </div>
 
         <div className="flex items-center justify-end mt-2">
+          {(activeTab === 'trucks' || activeTab === 'drivers') && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => void handleListPrint()}
+                disabled={listRowCount === 0}
+                className={listButtonClass}
+                data-testid={isTrucks ? 'trucks-print' : 'drivers-print'}
+              >
+                <Printer className="h-4 w-4 mr-2" /> Print
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => void handleListExcel()}
+                disabled={listRowCount === 0}
+                className={listButtonClass}
+                data-testid={isTrucks ? 'trucks-excel' : 'drivers-excel'}
+              >
+                <FileSpreadsheet className="h-4 w-4 mr-2" /> Export Excel
+              </Button>
+            </>
+          )}
           {activeTab === 'trucks' && (
             <Button 
               className="bg-cyan-600 text-white light:bg-cyan-600 light:text-white hover:bg-cyan-700 light:hover:bg-cyan-700" 
@@ -375,6 +439,8 @@ export default function TruckManagement({
             </Button>
           )}
         </div>
+
+        {listError && <p className="text-sm text-red-400 light:text-red-600">{listError}</p>}
 
         {/* Search */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-4 mt-6">

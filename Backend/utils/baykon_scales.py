@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import re
 import urllib.error
 import urllib.request
@@ -34,8 +35,14 @@ def get_scale(scale_id: int) -> Optional[dict[str, str]]:
     return SCALES.get(int(scale_id))
 
 
-def _http_status(ip: str, timeout: float = 5.0) -> tuple[Optional[dict], str]:
-    url = f"http://{ip}/status.cgi"
+def _scale_base_url(scale_id: Optional[int], ip: str) -> str:
+    """Base URL for a scale. BAYKON_SCALE1_URL / BAYKON_SCALE2_URL override it (testing)."""
+    override = os.getenv(f"BAYKON_SCALE{scale_id}_URL", "").strip() if scale_id else ""
+    return override.rstrip("/") if override else f"http://{ip}"
+
+
+def _http_status(ip: str, timeout: float = 5.0, scale_id: Optional[int] = None) -> tuple[Optional[dict], str]:
+    url = f"{_scale_base_url(scale_id, ip)}/status.cgi"
     token = base64.b64encode(f"{HTTP_USER}:{HTTP_PASS}".encode()).decode()
     req = urllib.request.Request(url)
     req.add_header("Authorization", f"Basic {token}")
@@ -84,7 +91,7 @@ def read_live_weight(scale_id: int, timeout: float = 5.0) -> dict[str, Any]:
             "stable": False,
         }
 
-    fields, detail = _http_status(meta["ip"], timeout=timeout)
+    fields, detail = _http_status(meta["ip"], timeout=timeout, scale_id=int(scale_id))
     if fields is None:
         return {
             "ok": False,

@@ -119,6 +119,7 @@ function Router() {
       <Route path="/fakieh/management/trucks" component={Management} />
       <Route path="/fakieh/management/drivers" component={Management} />
       <Route path="/fakieh/management/clients" component={Management} />
+      <Route path="/fakieh/management/orders" component={Management} />
       <Route path="/fakieh/truck-management">
         <Redirect to="/fakieh/management/trucks" />
       </Route>

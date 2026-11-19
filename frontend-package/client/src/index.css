@@ -85,8 +85,11 @@ body, #root {
 :root.light .light\:text-green-700 { color: #15803d !important; }
 :root.light .light\:text-green-600 { color: #16a34a !important; }
 
-/* Weighbridge Truck Entry operator console */
-.wb-console {
+/* Weighbridge Truck Entry operator console.
+   The colours are defined on the page root, not on .wb-console, because dropdown lists and
+   dialogs are drawn outside the console (at the end of <body>) and would otherwise get no
+   colours at all and show through. */
+:root {
   --wb-text: #eaf7ff;
   --wb-text-sec: #8aa6b8;
   --wb-text-muted: #557181;
@@ -102,10 +105,9 @@ body, #root {
   --wb-cyan: #00d9ff;
   --wb-cyan-bright: #5cebff;
   --wb-weight-idle: #3d5665;
-  color: var(--wb-text);
 }
 
-:root.light .wb-console {
+:root.light {
   --wb-text: #0f172a;
   --wb-text-sec: #475569;
   --wb-text-muted: #64748b;
@@ -121,6 +123,9 @@ body, #root {
   --wb-cyan: #0891b2;
   --wb-cyan-bright: #0e7490;
   --wb-weight-idle: #94a3b8;
+}
+
+.wb-console {
   color: var(--wb-text);
 }
 
@@ -319,6 +324,20 @@ body, #root {
   background: var(--wb-panel-elevated) !important;
   border: 1px solid var(--wb-border-input) !important;
   color: var(--wb-text) !important;
+}
+
+/* Rows of the type-to-search dropdown (SearchableSelect). */
+.wb-option[data-active="true"] {
+  background: var(--wb-row-active);
+  color: var(--wb-cyan-bright);
+}
+.wb-option[aria-selected="true"] {
+  font-weight: 600;
+}
+/* Light theme: the global [role="option"] rules further down force white rows, so say it louder. */
+:root.light .wb-select-content .wb-option[data-active="true"] {
+  background-color: rgba(8, 145, 178, 0.14) !important;
+  color: #0e7490 !important;
 }
 
 .wb-kpi-icon-cyan {
@@ -4821,5 +4840,21 @@ main {
 
 :root.light .pallet-live-status-badge[data-running='true'] .pallet-live-status-dot {
   background-color: #22c55e !important;
+}
+
+.pallet-live-status-badge[data-paused='true'] {
+  border-color: #d97706 !important;
+  background: #d97706 !important;
+  color: #ffffff !important;
+}
+
+:root.light .pallet-live-status-badge[data-paused='true'] {
+  border-color: #f59e0b !important;
+  background: #fef3c7 !important;
+  color: #92400e !important;
+}
+
+:root.light .pallet-live-status-badge[data-paused='true'] .pallet-live-status-dot {
+  background-color: #f59e0b !important;
 }
 

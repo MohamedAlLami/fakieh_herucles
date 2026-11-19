@@ -20,6 +20,9 @@ truck_entry_bp = Blueprint("truck_entry", __name__, url_prefix="/api/truck-entry
 TIMEZONE_NAME = BUSINESS_TZ_NAME
 
 
+LOADING_POINTS = (1, 2, 3)
+
+
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -65,7 +68,8 @@ def _order_dict(order: TruckWeighOrder, truck_map=None, driver_map=None):
     d = driver_map.get(order.truck_id)
     return order.to_dict(
         truck_plate=getattr(t, "license", None) if t else None,
-        truck_driver=getattr(d, "name", None) if d else None,
+        # The driver chosen on the weighbridge for this trip wins over the truck's usual driver.
+        truck_driver=order.wb_driver_name or (getattr(d, "name", None) if d else None),
     )
 
 
@@ -108,6 +112,156 @@ def scale_live(scale_id: int):
     return jsonify(reading), status
 
 
+@truck_entry_bp.route("/silos", methods=["GET"])
+def list_silos_for_material():
+    """Silos holding `material_code` (matching) and silos with no material (unassigned)."""
+    from services.silo_stock import classify_silos
+
+    material_code = str(request.args.get("material_code") or "").strip()
+    if not material_code:
+        return jsonify({"error": "material_code is required"}), 400
+    try:
+        # Reuse the Storage page source (silo_status + live PLC quantity merge).
+        from routes.plc_routes import silos_from_db_under_plc_prefix
+        silos = silos_from_db_under_plc_prefix().get_json() or []
+    except Exception as e:
+        return jsonify({"error": "Failed to load silos", "detail": str(e)}), 502
+    out = classify_silos(silos, material_code)
+    # Temporary silos 1001-1200 (ground storage, database only).
+    try:
+        from services import temp_silos
+        t = temp_silos.classify(temp_silos.list_all(), material_code)
+        out["tempMatching"], out["tempFree"] = t["matching"], t["free"]
+    except Exception:
+        out["tempMatching"], out["tempFree"] = [], []
+    return jsonify(out), 200
+
+
+def _silo_exists(silo_no: int) -> bool:
+    from services import temp_silos
+    if temp_silos.is_temp_silo(silo_no):
+        return temp_silos.get_one(silo_no) is not None
+    from routes.plc_routes import _app_rows
+    rows = _app_rows("SELECT 1 FROM public.silo_status WHERE silo_no = %(s)s", {"s": silo_no})
+    return bool(rows)
+
+
+def _run_stock_update(order: TruckWeighOrder, retry: bool = False):
+    """Apply the order's signed delta to its silo and record the outcome.
+
+    Never raises: a weighbridge trip must not fail because of stock bookkeeping.
+    Uses its own commit, after the trip itself is already committed.
+
+    Retry design: stock_applied_at is stamped the moment the database quantity has
+    been moved (even while stock_status is still 'pending'). A retry sees it and
+    passes db_already_applied=True, so only the PLC write and status change remain.
+    """
+    try:
+        from services import temp_silos
+        from services.silo_stock import NOT_CONFIRMED_NOTE, apply_stock_delta
+
+        if temp_silos.is_temp_silo(order.silo_no):
+            _run_temp_stock_update(order, retry)
+            return
+
+        if retry:
+            delta = float(order.stock_delta_kg)
+        else:
+            delta = float(order.first_weight_kg) - float(order.second_weight_kg)
+            order.stock_delta_kg = delta
+        db_done = retry and order.stock_applied_at is not None
+        plc_before = (
+            order.stock_qty_before
+            if retry and (order.stock_note or "").startswith(NOT_CONFIRMED_NOTE)
+            else None
+        )
+        res = apply_stock_delta(
+            order.silo_no, delta, db_already_applied=db_done, plc_before_attempt=plc_before
+        )
+        order.stock_status = res["status"]
+        if res.get("qty_before") is not None:
+            order.stock_qty_before = res["qty_before"]
+        if res.get("qty_after") is not None:
+            order.stock_qty_after = res["qty_after"]
+        if res["status"] == "applied" or (res.get("db_applied") and not db_done):
+            order.stock_applied_at = _utcnow()
+        order.stock_note = (res.get("note") or "")[:255]
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        try:
+            order.stock_status = "pending"
+            order.stock_note = f"stock update error: {e}"[:255]
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+
+def _run_temp_stock_update(order: TruckWeighOrder, retry: bool):
+    """Temporary silo (1001-1200): database only, never the PLC. Raises to the caller's handler."""
+    from services import temp_silos
+
+    if retry and order.stock_delta_kg is not None:
+        delta = float(order.stock_delta_kg)
+    else:
+        delta = float(order.first_weight_kg) - float(order.second_weight_kg)
+        order.stock_delta_kg = delta
+    if delta == 0:
+        order.stock_status = "skipped"
+        order.stock_note = "zero delta"
+        db.session.commit()
+        return
+    try:
+        before, after = temp_silos.apply_trip(
+            order.silo_no, delta, order.material_code, order.material_name or "", order.id
+        )
+    except temp_silos.TempSiloError as e:
+        order.stock_status = "pending"
+        order.stock_note = str(e)[:255]
+        db.session.commit()
+        return
+    order.stock_status = "applied"
+    order.stock_qty_before = before
+    order.stock_qty_after = after
+    order.stock_applied_at = _utcnow()
+    order.stock_note = temp_silos.TEMP_NOTE + (" (below zero)" if after < 0 else "")
+    db.session.commit()
+
+
+def _temp_silo_conflict(silo_no: int, material_code: str):
+    """Why a temporary silo cannot take this material, or None."""
+    from services import temp_silos
+
+    row = temp_silos.get_one(silo_no)
+    if row and row["materialCode"] and not temp_silos.same_material(row["materialCode"], material_code):
+        return f"Temporary silo {silo_no} holds material {row['materialCode']} {row['materialName']}".strip()
+    others = TruckWeighOrder.query.filter(
+        TruckWeighOrder.silo_no == silo_no,
+        TruckWeighOrder.status.in_(list(OPEN_STATUSES)),
+    ).all()
+    for o in others:
+        if not temp_silos.same_material(o.material_code, material_code):
+            return (f"Temporary silo {silo_no} is taken by open trip {o.ticket} "
+                    f"with material {o.material_code}")
+    return None
+
+
+@truck_entry_bp.route("/orders/<int:order_id>/apply-stock", methods=["POST"])
+def apply_stock(order_id: int):
+    """Retry the silo stock update of a completed order whose stock_status is 'pending'."""
+    order = TruckWeighOrder.query.filter_by(id=order_id).with_for_update().first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    if order.stock_status == "applied":
+        return jsonify({"error": "Stock already applied", "stock_status": "applied"}), 409
+    if order.stock_status != "pending" or order.silo_no is None or order.stock_delta_kg is None:
+        return jsonify({"error": "Order has no pending stock update"}), 409
+
+    _run_stock_update(order, retry=True)
+    truck_map, driver_map = _enrich_truck_maps({order.truck_id})
+    return jsonify(_order_dict(order, truck_map, driver_map)), 200
+
+
 @truck_entry_bp.route("/orders", methods=["POST"])
 def create_order():
     data = request.get_json(force=True) or {}
@@ -116,10 +270,74 @@ def create_order():
 
     if truck_id is None:
         return jsonify({"error": "truck_id is required"}), 400
+
+    # Optional weighbridge order: the trip takes its product, client and quantity from it.
+    wb_order = None
+    raw_order_no = data.get("order_no")
+    if raw_order_no is not None and raw_order_no != "":
+        if isinstance(raw_order_no, bool) or not str(raw_order_no).strip().isdigit():
+            return jsonify({"error": "order_no must be a whole number"}), 400
+        from services import weighbridge_orders as wo
+        try:
+            wb_order = wo.get_by_no(int(str(raw_order_no).strip()))
+        except Exception as e:
+            return jsonify({"error": "Could not load the order", "detail": str(e)}), 500
+        if wb_order is None:
+            return jsonify({"error": f"Order {raw_order_no} not found"}), 400
+        if wb_order["status"] != "open":
+            what = "already closed" if wb_order["status"] == "closed" else "already in use by another truck"
+            return jsonify({"error": f"Order {wb_order['order_no']} is {what}"}), 409
+        if not material_code:
+            material_code = wb_order["product_code"]
+        elif material_code != wb_order["product_code"]:
+            return jsonify({
+                "error": f"Order {wb_order['order_no']} is for product {wb_order['product_code']}, "
+                         f"not {material_code}",
+            }), 400
+
+    # Optional driver (from Management > Drivers) and loading point (1, 2 or 3).
+    wb_driver = None
+    raw_driver = data.get("driver_id")
+    if raw_driver is not None and raw_driver != "":
+        if isinstance(raw_driver, bool) or not str(raw_driver).strip().isdigit():
+            return jsonify({"error": "driver_id must be a whole number"}), 400
+        wb_driver = Driver.query.get(int(str(raw_driver).strip()))
+        if wb_driver is None:
+            return jsonify({"error": f"Driver {raw_driver} not found"}), 400
+    loading_point = None
+    raw_lp = data.get("loading_point")
+    if raw_lp is not None and raw_lp != "":
+        if isinstance(raw_lp, bool) or not str(raw_lp).strip().isdigit() or int(str(raw_lp).strip()) not in LOADING_POINTS:
+            return jsonify({"error": "loading_point must be 1, 2 or 3"}), 400
+        loading_point = int(str(raw_lp).strip())
+
     if not material_code:
         return jsonify({"error": "material_code is required"}), 400
     if not is_valid_material_code(material_code):
         return jsonify({"error": f"Invalid material_code: {material_code}"}), 400
+
+    silo_no = None
+    raw_silo = data.get("silo_no")
+    if raw_silo is not None and raw_silo != "":
+        if isinstance(raw_silo, bool) or not isinstance(raw_silo, (int, str)) or (
+            isinstance(raw_silo, str) and not raw_silo.strip().lstrip("-").isdigit()
+        ):
+            return jsonify({"error": "silo_no must be an integer"}), 400
+        silo_no = int(raw_silo)
+        try:
+            exists = _silo_exists(silo_no)
+        except Exception as e:
+            return jsonify({"error": "Could not verify silo", "detail": str(e)}), 500
+        if not exists:
+            return jsonify({"error": f"Silo {silo_no} not found"}), 400
+        from services import temp_silos
+        if temp_silos.is_temp_silo(silo_no):
+            try:
+                conflict = _temp_silo_conflict(silo_no, material_code)
+            except Exception as e:
+                return jsonify({"error": "Could not verify silo", "detail": str(e)}), 500
+            if conflict:
+                return jsonify({"error": conflict}), 400
 
     truck = Truck.query.get(int(truck_id))
     if not truck:
@@ -140,8 +358,15 @@ def create_order():
         truck_id=int(truck_id),
         material_code=material_code,
         material_name=material_name,
+        silo_no=silo_no,
         status="awaiting_first",
         created_at=_utcnow(),
+        wb_order_no=wb_order["order_no"] if wb_order else None,
+        wb_client_name=wb_order["client_name"] if wb_order else None,
+        wb_order_qty_kg=wb_order["quantity_kg"] if wb_order else None,
+        wb_driver_id=wb_driver.id if wb_driver else None,
+        wb_driver_name=wb_driver.name if wb_driver else None,
+        loading_point=loading_point,
     )
     try:
         db.session.add(order)
@@ -149,6 +374,21 @@ def create_order():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to create order", "detail": str(e)}), 500
+
+    if wb_order:
+        # Take the order for this trip. If someone else took it a moment ago, undo the trip.
+        from services import weighbridge_orders as wo
+        try:
+            wo.attach(wb_order["order_no"], order.id)
+        except Exception as e:
+            try:
+                db.session.delete(order)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            code = getattr(e, "code", 500)
+            return jsonify({"error": str(e) if code != 500 else "Could not take the order",
+                            "detail": str(e)}), code
 
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 201
@@ -221,6 +461,18 @@ def save_second_weight(order_id: int):
         db.session.rollback()
         return jsonify({"error": "Failed to save second weight", "detail": str(e)}), 500
 
+    # The truck has exited: its weighbridge order (if any) is closed. Never fails the trip.
+    if order.wb_order_no is not None:
+        try:
+            from services import weighbridge_orders as wo
+            wo.close(order.id)
+        except Exception:
+            pass
+
+    # Trip is committed. Silo stock is best effort and must never fail the trip.
+    if order.silo_no is not None and order.stock_status != "applied":
+        _run_stock_update(order)
+
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 200
 
@@ -290,7 +542,11 @@ def get_order(order_id: int):
 
 @truck_entry_bp.route("/orders/<int:order_id>", methods=["DELETE"])
 def delete_order(order_id: int):
-    """Cancel/remove an open weigh trip so the truck can be used again."""
+    """Cancel/remove an open weigh trip so the truck can be used again.
+
+    Only open trips can be cancelled and stock moves only on exit weight, so
+    cancelling never reverses (and never needs to reverse) stock.
+    """
     order = TruckWeighOrder.query.get(order_id)
     if not order:
         return jsonify({"error": "Order not found"}), 404
@@ -305,6 +561,14 @@ def delete_order(order_id: int):
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to delete order", "detail": str(e)}), 500
+
+    # A cancelled trip gives its weighbridge order back: it is open again.
+    if order.wb_order_no is not None:
+        try:
+            from services import weighbridge_orders as wo
+            wo.release(order.id)
+        except Exception:
+            pass
 
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 200

@@ -541,10 +541,91 @@ def render_silo_qty(b: bytearray, qty_map: Dict[int, Tuple[int, str]]) -> Dict[i
 def fetch_silo_qty_from_plc() -> Dict[int, float]:
     from routes.silo_qty_map import load_qty_map
     m = load_qty_map(5)
-    b = read_db_bytes(5, _needed_bytes(m))
-    if not b:
-        return {}
-    return render_silo_qty(b, m["qty_map"])
+    # Ask for exactly the mapped length. DB5 on site is 492 bytes; the usual +8 margin made the
+    # read fail and fall back to 384 bytes, which silently dropped silos 822-848.
+    b = read_db_bytes(5, int(m["max_byte"]))
+    qty = render_silo_qty(b, m["qty_map"]) if b else {}
+    # The plant's own silo blocks are what SCADA shows; DB5 is only a partial copy of them
+    # (zero for the 300/600/800/900 groups on site). Where a silo block is known it wins.
+    if not DEMO_MODE:
+        try:
+            svc = silo_block_service()
+            if svc is not None:
+                qty.update(svc.quantities())
+        except Exception as e:
+            print(f"[SILO-BLOCKS] read failed, using DB5 only: {e}")
+    return qty
+
+
+_PLC_LINK_ERROR_WORDS = ("tcp", "connect", "socket", "timeout", "timed out", "winerror", "errno",
+                         "unreachable", "reset", "refused", "broken pipe", "stale", "recv", "send",
+                         "iso ", "not initialized", "job pending")
+
+
+def _is_plc_link_error(exc: Exception) -> bool:
+    """True when the exception means the PLC could not be reached, not that it said no."""
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return True
+    name = type(exc).__name__.lower()
+    if "connection" in name or "timeout" in name:
+        return True
+    msg = str(exc).lower()
+    return any(w in msg for w in _PLC_LINK_ERROR_WORDS)
+
+
+def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
+    """Uncached read of part of a data block.
+
+    Returns None when the PLC answers that the block (or that part of it) does not exist.
+    Raises services.silo_blocks.PlcUnavailable when the PLC could not be asked at all, so that
+    "could not ask" is never mistaken for "does not exist".
+    """
+    global CLIENT
+    from services.silo_blocks import PlcUnavailable
+    if DEMO_MODE or not _snap7_loaded:
+        raise PlcUnavailable("PLC access is off (demo mode or snap7 missing)")
+    for attempt in (1, 2):
+        cli = ensure_client()
+        if cli is None:
+            raise PlcUnavailable("no PLC connection")
+        try:
+            with CLIENT_LOCK:
+                return bytes(cli.db_read(db_no, start, size))
+        except Exception as e:
+            # The PLC answering "no such block" / "address out of range" is a real answer (wording
+            # differs between snap7 versions), so only a recognisable LINK failure counts as
+            # "could not ask": reconnect and try once more.
+            if not _is_plc_link_error(e):
+                return None
+            CLIENT = None
+            last_error = e
+    raise PlcUnavailable(f"PLC read failed: {last_error}")
+
+
+_SILO_BLOCK_SERVICE = None
+
+
+def silo_block_service():
+    """Shared reader of the plant's per-silo blocks (services/silo_blocks.py). None when switched off."""
+    global _SILO_BLOCK_SERVICE
+    from services import silo_blocks
+    if not silo_blocks.enabled():
+        return None
+    if _SILO_BLOCK_SERVICE is None:
+        def _known_silos():
+            from routes.silo_qty_map import QTY_MAP_DB5
+            known = set(QTY_MAP_DB5.keys())
+            try:
+                known.update(int(r["silo_no"]) for r in _app_rows("SELECT silo_no FROM public.silo_status"))
+            except Exception:
+                pass
+            return known
+        _SILO_BLOCK_SERVICE = silo_blocks.SiloBlockService(
+            read80=lambda db: _plc_read_raw(db, 0, silo_blocks.BLOCK_LEN),
+            is_longer=lambda db: _plc_read_raw(db, silo_blocks.BLOCK_LEN, 1) is not None,
+            known_silos=_known_silos,
+        )
+    return _SILO_BLOCK_SERVICE
 
 def _resolve_silo_qty(
     silo_no: int,

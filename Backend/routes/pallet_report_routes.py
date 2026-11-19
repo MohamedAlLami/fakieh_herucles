@@ -144,15 +144,17 @@ def pallet_live():
             values["production_name"] = order.production_name if order else None
             values["material"] = order.material if order else None
             values["current_order"] = None
+            values["paused"] = bool(order) and not values["running"]
             if order:
+                full_seconds, actual_seconds = order.run_seconds(timestamp)
                 values["current_order"] = {
                     "id": order.id,
                     "order_sequence": order.order_sequence,
                     "order_description": order.order_description,
                     "actual_start_time": order.actual_start_time.isoformat(),
-                    "elapsed_seconds": max(
-                        0, int((timestamp - order.actual_start_time).total_seconds())
-                    ),
+                    "elapsed_seconds": full_seconds,
+                    "full_run_seconds": full_seconds,
+                    "actual_run_seconds": actual_seconds,
                 }
         return jsonify({"success": True, "timestamp": timestamp.isoformat(), "lines": lines})
     except PalletPLCReadError as exc:

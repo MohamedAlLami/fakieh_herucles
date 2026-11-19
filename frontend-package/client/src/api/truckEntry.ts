@@ -18,6 +18,62 @@ export interface TruckWeighOrder {
   status: TruckWeighStatus;
   site_status?: string;
   created_at?: string | null;
+  silo_no?: number | null;
+  /** Signed kg: positive = silo gains (truck in heavy, out light). */
+  stock_delta_kg?: number | null;
+  stock_status?: "applied" | "pending" | "skipped" | null;
+  stock_qty_before?: number | null;
+  stock_qty_after?: number | null;
+  stock_applied_at?: string | null;
+  stock_note?: string | null;
+  /** Weighbridge order this trip is for (Management > Weighbridge Orders), if any. */
+  order_no?: number | null;
+  order_client_name?: string | null;
+  order_quantity_kg?: number | null;
+  /** Driver and loading point chosen on the weighbridge for this trip (optional). */
+  driver_id?: number | null;
+  driver_name?: string | null;
+  loading_point?: number | null;
+}
+
+export interface DriverOption {
+  id: number;
+  name: string;
+  license_no?: string;
+  status?: string;
+  truck_id?: number | null;
+}
+
+/** Every driver from Management > Drivers, for the weighbridge dropdown. */
+export async function fetchAllDrivers(signal?: AbortSignal): Promise<DriverOption[]> {
+  const out: DriverOption[] = [];
+  let offset = 0;
+  for (let page = 0; page < 100; page++) {
+    const res = await fetch(`${API_BASE_URL}/trucks/drivers?limit=200&offset=${offset}`, { signal });
+    const data = await parseJson<{ items?: DriverOption[]; has_more?: boolean }>(res);
+    const items = data.items ?? [];
+    out.push(...items);
+    if (!data.has_more || items.length === 0) break;
+    offset += items.length;
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export interface SiloOption {
+  siloNo: number;
+  materialCode: string;
+  materialName: string;
+  quantityKg: number | null;
+  lockActive: boolean;
+}
+
+export interface SilosForMaterial {
+  matching: SiloOption[];
+  unassigned: SiloOption[];
+  /** Temporary silos (1001-1200, Hercules only) that already hold this material. */
+  tempMatching: SiloOption[];
+  /** Temporary silos with no material yet. */
+  tempFree: SiloOption[];
 }
 
 export interface ScaleLiveReading {
@@ -53,12 +109,23 @@ async function parseJson<T>(res: Response): Promise<T> {
 
 export async function createTruckWeighOrder(
   truckId: number,
-  materialCode: string
+  materialCode: string,
+  siloNo?: number | null,
+  orderNo?: number | null,
+  driverId?: number | null,
+  loadingPoint?: number | null
 ): Promise<TruckWeighOrder> {
   const res = await fetch(`${BASE}/orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ truck_id: truckId, material_code: materialCode }),
+    body: JSON.stringify({
+      truck_id: truckId,
+      material_code: materialCode,
+      ...(siloNo != null ? { silo_no: siloNo } : {}),
+      ...(orderNo != null ? { order_no: orderNo } : {}),
+      ...(driverId != null ? { driver_id: driverId } : {}),
+      ...(loadingPoint != null ? { loading_point: loadingPoint } : {}),
+    }),
   });
   const text = await res.text();
   let data: unknown;
@@ -86,6 +153,26 @@ export async function createTruckWeighOrder(
     throw new Error(err?.error || text || res.statusText);
   }
   return data as TruckWeighOrder;
+}
+
+export async function fetchSilosForMaterial(
+  materialCode: string,
+  signal?: AbortSignal
+): Promise<SilosForMaterial> {
+  const res = await fetch(`${BASE}/silos?material_code=${encodeURIComponent(materialCode)}`, { signal });
+  const data = await parseJson<Partial<SilosForMaterial>>(res);
+  return {
+    matching: data.matching ?? [],
+    unassigned: data.unassigned ?? [],
+    tempMatching: data.tempMatching ?? [],
+    tempFree: data.tempFree ?? [],
+  };
+}
+
+/** Retry the silo stock update of a completed order whose stock_status is 'pending'. */
+export async function applyOrderStock(orderId: number): Promise<TruckWeighOrder> {
+  const res = await fetch(`${BASE}/orders/${orderId}/apply-stock`, { method: "POST" });
+  return parseJson(res);
 }
 
 export async function saveFirstWeight(orderId: number, weight: number): Promise<TruckWeighOrder> {

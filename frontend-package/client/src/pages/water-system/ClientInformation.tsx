@@ -4,8 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Plus, Pencil, Trash2, X, Users, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Users, ChevronLeft, ChevronRight, Printer, FileSpreadsheet } from 'lucide-react'
 import { API_BASE_URL } from '../../config/api'
+import { printTable } from '../../utils/printTable'
+import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
 
 interface Client {
   id: number
@@ -91,6 +93,34 @@ export default function ClientInformation(): JSX.Element {
   useEffect(() => {
     fetchClients()
   }, [fetchClients])
+
+  // Print / Excel of the clients on the page shown (after the name / ID search), without the action buttons.
+  const clientColumns: ExportColumn<Client>[] = [
+    { header: 'Client ID', cell: (c) => c.id },
+    { header: 'Client Number', cell: (c) => c.client_number || '' },
+    { header: 'Client Name', cell: (c) => c.name },
+    { header: 'Phone Number', cell: (c) => c.phone },
+  ]
+  const clientSubtitles = () => {
+    const sub = [`${clients.length} of ${total} clients (page ${currentPage})`]
+    if (debouncedName) sub.push(`Name: ${debouncedName}`)
+    if (debouncedId) sub.push(`Client ID: ${debouncedId}`)
+    return sub
+  }
+  const handleClientsPrint = async () => {
+    setError(await printTable({ title: 'Client Information', subtitles: clientSubtitles(), columns: clientColumns, rows: clients }))
+  }
+  const handleClientsExcel = async () => {
+    setError(await exportTableToExcel({
+      title: 'Client Information',
+      subtitles: clientSubtitles(),
+      columns: clientColumns,
+      rows: clients,
+      filename: 'clients',
+      sheetName: 'Clients',
+    }))
+  }
+  const listButtonClass = 'shrink-0 border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100'
 
   const openAddModal = () => {
     setEditMode(false)
@@ -190,6 +220,24 @@ export default function ClientInformation(): JSX.Element {
               onChange={(e) => setSearchId(e.target.value.replace(/\D/g, ''))}
             />
           </div>
+          <Button
+            variant="outline"
+            className={listButtonClass}
+            onClick={() => void handleClientsPrint()}
+            disabled={clients.length === 0}
+            data-testid="clients-print"
+          >
+            <Printer className="h-4 w-4 mr-2" /> Print
+          </Button>
+          <Button
+            variant="outline"
+            className={listButtonClass}
+            onClick={() => void handleClientsExcel()}
+            disabled={clients.length === 0}
+            data-testid="clients-excel"
+          >
+            <FileSpreadsheet className="h-4 w-4 mr-2" /> Export Excel
+          </Button>
           <Button
             className="bg-cyan-600 text-white light:bg-cyan-600 light:text-white hover:bg-cyan-700 light:hover:bg-cyan-700 shrink-0"
             onClick={openAddModal}

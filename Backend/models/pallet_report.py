@@ -29,6 +29,8 @@ class PalletReport(db.Model):
     destination2 = db.Column(db.Integer, nullable=True)
     quantity = db.Column(db.Float, nullable=False)
     running = db.Column(db.Boolean, nullable=False, default=True)
+    # PLC FullRun bit at this minute; NULL on rows stored before the bit existed.
+    full_run = db.Column(db.Boolean, nullable=True)
     selection = db.Column(db.Integer, nullable=True)
     recorded_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
@@ -43,7 +45,31 @@ class PalletReport(db.Model):
             "destination2": self.destination2,
             "quantity": self.quantity,
             "running": self.running,
+            "full_run": self.full_run,
             "selection": self.selection,
             "recorded_at": self.recorded_at.isoformat() if self.recorded_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+def ensure_pallet_run_columns():
+    """Add the full-run / actual-run columns on existing installs (idempotent)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(db.engine)
+    statements = []
+    if insp.has_table("pallet_report"):
+        statements.append("ALTER TABLE pallet_report ADD COLUMN IF NOT EXISTS full_run BOOLEAN")
+    if insp.has_table("pallet_orders"):
+        statements += [
+            "ALTER TABLE pallet_orders ADD COLUMN IF NOT EXISTS active_seconds DOUBLE PRECISION",
+            "ALTER TABLE pallet_orders ADD COLUMN IF NOT EXISTS last_running BOOLEAN",
+            "ALTER TABLE pallet_orders ADD COLUMN IF NOT EXISTS last_observed_at TIMESTAMPTZ",
+        ]
+    try:
+        for stmt in statements:
+            db.session.execute(text(stmt))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise

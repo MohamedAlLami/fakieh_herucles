@@ -37,6 +37,24 @@ import {
   loadLogoForExcel,
   type ReportExcelCellStyle,
 } from '@/lib/reportExcelExport';
+
+/** Pellet line from the 60x line number right before the trailing sequence number, e.g. "BR-GR602 5" -> "Pellet 1". */
+export function pelletLineFromBatchName(name: string | null | undefined): string {
+  const match = /(?<!\d)(60[1-5])\s*\d*\s*$/.exec(String(name ?? ''));
+  switch (match?.[1]) {
+    case '601':
+    case '602':
+      return 'Pellet 1';
+    case '603':
+    case '604':
+      return 'Pellet 2';
+    case '605':
+      return 'Pellet 3-4';
+    default:
+      return '';
+  }
+}
+
 const tabs = [
   "Product Batch Summary",
   "Weekly",
@@ -1245,7 +1263,7 @@ export function BatchHistoricalReports() {
   const getTableHeaders = (tabName: string) => {
     switch (tabName) {
       case "Product Batch Summary":
-        return ["Batch Name", "Product Code", "Product Name", "Batch Start", "Batch End", "Batch Quantity"];
+        return ["Batch Name", "Pellet Line", "Product Code", "Product Name", "Batch Start", "Batch End", "Batch Quantity"];
       case "Weekly":
       case "Monthly":
       case "Daily Report":
@@ -1372,6 +1390,7 @@ export function BatchHistoricalReports() {
             <td className={cell}></td>
             <td className={cell}></td>
             <td className={cell}></td>
+            <td className={cell}></td>
             <td className={cell}>{totals.totalQuantity.toFixed(2)}</td>
           </tr>
         </tfoot>
@@ -1444,6 +1463,7 @@ export function BatchHistoricalReports() {
         return (
           <tr key={index} className={baseRowClasses}>
             <td className="px-4 py-2 text-slate-900 dark:text-white text-sm w-auto">{item.batchName}</td>
+            <td className="px-4 py-2 text-slate-900 dark:text-white text-sm w-auto">{pelletLineFromBatchName(item.batchName)}</td>
             <td className="px-4 py-2 text-slate-900 dark:text-white text-sm w-auto">{item.productCode || '-'}</td>
             <td className="px-4 py-2 text-slate-900 dark:text-white text-sm w-auto">{item.productName}</td>
             <td className="px-4 py-2 text-slate-900 dark:text-white text-sm w-auto">{formatSaudiTime(item.batchStart, true)}</td>
@@ -1594,6 +1614,8 @@ export function BatchHistoricalReports() {
     switch (header) {
       case 'Batch Name':
         return String(item.batchName || '');
+      case 'Pellet Line':
+        return pelletLineFromBatchName(item.batchName as string | null | undefined);
       case 'Product Name':
         return String(item.productName || '');
       case 'Product Code':
@@ -2216,6 +2238,9 @@ export function BatchHistoricalReports() {
               case 'Batch Name':
                 value = item.batchName || '';
                 break;
+              case 'Pellet Line':
+                value = pelletLineFromBatchName(item.batchName);
+                break;
               case 'Product Name':
                 value = item.productName || '';
                 break;
@@ -2295,7 +2320,7 @@ export function BatchHistoricalReports() {
         htmlContent += `
           <tr class="total-row">
             <td>${totals.label}</td>
-            <td></td><td></td><td></td><td></td>
+            <td></td><td></td><td></td><td></td><td></td>
             <td>${totals.totalQuantity.toFixed(2)}</td>
           </tr>
         `;

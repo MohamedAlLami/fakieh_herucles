@@ -114,6 +114,43 @@ def _run_pallet_history():
             logger.error('Pallet historian cycle error: %s', e, exc_info=True)
 
 
+def _run_material_sync():
+    """Bring the material list in step with the local copy of Materials.xml."""
+    if _app is None:
+        return
+    with _app.app_context():
+        try:
+            from services.material_master import sync_from_file
+            sync_from_file()
+        except Exception as e:
+            logger.error('Material list sync error: %s', e, exc_info=True)
+
+
+def start_material_sync(app, interval_seconds=None):
+    """Register the material-list sync (reads a local file; no PLC, no network)."""
+    global _scheduler, _app
+    _app = app
+    if _scheduler is None:
+        _scheduler = BackgroundScheduler(daemon=True)
+        _scheduler.start()
+        logger.info('Scheduler started (for material list sync)')
+
+    _run_material_sync()   # once now, so the list is right before the first request
+    interval = interval_seconds or float(os.getenv('MATERIAL_SYNC_INTERVAL_SEC', '30'))
+    _scheduler.add_job(
+        _run_material_sync,
+        trigger='interval',
+        seconds=interval,
+        id='material_sync',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+    )
+    logger.info('Material list sync started (every %ss)', interval)
+    return _scheduler
+
+
 def start_queue_dispatcher(app, interval_seconds=None):
     """Register the always-on order-queue dispatcher on an interval.
 

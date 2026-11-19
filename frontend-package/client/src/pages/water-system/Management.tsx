@@ -5,20 +5,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { RFID } from './RFID'
 import TruckManagement from './TruckManagement'
 import ClientInformation from './ClientInformation'
+import WeighbridgeOrders from './WeighbridgeOrders'
 
-export type ManagementSection = 'rfid' | 'trucks' | 'drivers' | 'clients'
+export type ManagementSection = 'rfid' | 'trucks' | 'drivers' | 'clients' | 'orders'
 
 const SECTION_OPTIONS: { value: ManagementSection; label: string; path: string }[] = [
   { value: 'rfid', label: 'RFID', path: '/fakieh/management/rfid' },
   { value: 'trucks', label: 'Trucks', path: '/fakieh/management/trucks' },
   { value: 'drivers', label: 'Drivers', path: '/fakieh/management/drivers' },
   { value: 'clients', label: 'Clients', path: '/fakieh/management/clients' },
+  { value: 'orders', label: 'Weighbridge Orders', path: '/fakieh/management/orders' },
 ]
 
 export function managementSectionFromPath(location: string): ManagementSection {
   if (location.startsWith('/fakieh/management/rfid')) return 'rfid'
   if (location.startsWith('/fakieh/management/drivers')) return 'drivers'
   if (location.startsWith('/fakieh/management/clients')) return 'clients'
+  if (location.startsWith('/fakieh/management/orders')) return 'orders'
   return 'trucks'
 }
 
@@ -31,6 +34,7 @@ export default function Management(): JSX.Element {
     trucks: 'Fleet registration and truck records',
     drivers: 'Driver profiles and truck assignments',
     clients: 'Client names and contact numbers',
+    orders: 'Orders for the weighbridge: product, quantity and client',
   }
 
   return (
@@ -63,6 +67,7 @@ export default function Management(): JSX.Element {
       {section === 'trucks' && <TruckManagement section="trucks" />}
       {section === 'drivers' && <TruckManagement section="drivers" />}
       {section === 'clients' && <ClientInformation />}
+      {section === 'orders' && <WeighbridgeOrders />}
     </WaterSystemLayout>
   )
 }

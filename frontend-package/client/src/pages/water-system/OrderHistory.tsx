@@ -9,11 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { CalendarIcon, Search, Filter, Download, RefreshCw, Clock, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
+import { CalendarIcon, Search, Filter, Download, RefreshCw, Clock, CheckCircle, XCircle, AlertCircle, Printer, FileSpreadsheet } from 'lucide-react'
 import { format } from 'date-fns'
 import axios from 'axios'
 import { cn } from '@/lib/utils'
 import { API_BASE_URL } from '../../config/api'
+import { printTable, rowsToPrint } from '@/utils/printTable'
+import { useRowSelection } from '@/hooks/useRowSelection'
+import { exportTableToExcel, type ExportColumn } from '@/utils/exportTable'
 
 const baseUrl = API_BASE_URL
 
@@ -186,6 +189,9 @@ export function OrderHistory() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700/30 light:border-gray-200 hover:bg-slate-800/50 light:hover:bg-gray-50">
+                <TableHead className="w-10">
+                  <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label="Select all shown rows" checked={selection.allSelected} onChange={selection.toggleAll} />
+                </TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">RFID</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Source Material</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Quantity (KG)</TableHead>
@@ -201,7 +207,10 @@ export function OrderHistory() {
             </TableHeader>
             <TableBody>
               {data.map((order, index) => (
-                <TableRow key={order.id} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                <TableRow key={rowId(order)} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                  <TableCell className="w-10">
+                    <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label={`Select order ${order.badgeNo || order.sourceSilo || order.pitNo || order.id}`} checked={selection.selected.has(rowId(order))} onChange={() => selection.toggle(rowId(order))} />
+                  </TableCell>
                   <TableCell className="text-cyan-400 light:text-blue-600 font-medium">{order.badgeNo || '-'}</TableCell>
                   <TableCell className="text-white light:text-gray-900">
                     <div className="flex flex-col">
@@ -255,6 +264,9 @@ export function OrderHistory() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700/30 light:border-gray-200 hover:bg-slate-800/50 light:hover:bg-gray-50">
+                <TableHead className="w-10">
+                  <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label="Select all shown rows" checked={selection.allSelected} onChange={selection.toggleAll} />
+                </TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">RFID</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Source Material</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Quantity (KG)</TableHead>
@@ -270,7 +282,10 @@ export function OrderHistory() {
             </TableHeader>
             <TableBody>
               {data.map((order, index) => (
-                <TableRow key={order.id} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                <TableRow key={rowId(order)} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                  <TableCell className="w-10">
+                    <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label={`Select order ${order.badgeNo || order.sourceSilo || order.pitNo || order.id}`} checked={selection.selected.has(rowId(order))} onChange={() => selection.toggle(rowId(order))} />
+                  </TableCell>
                   <TableCell className="text-cyan-400 light:text-blue-600 font-medium">{order.badgeNo || '-'}</TableCell>
                   <TableCell className="text-white light:text-gray-900">
                     <div className="flex flex-col">
@@ -324,6 +339,9 @@ export function OrderHistory() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700/30 light:border-gray-200 hover:bg-slate-800/50 light:hover:bg-gray-50">
+                <TableHead className="w-10">
+                  <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label="Select all shown rows" checked={selection.allSelected} onChange={selection.toggleAll} />
+                </TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Source Silo</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Source Material</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Quantity (KG)</TableHead>
@@ -340,7 +358,10 @@ export function OrderHistory() {
             </TableHeader>
             <TableBody>
               {data.map((order, index) => (
-                <TableRow key={order.id} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                <TableRow key={rowId(order)} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                  <TableCell className="w-10">
+                    <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label={`Select order ${order.badgeNo || order.sourceSilo || order.pitNo || order.id}`} checked={selection.selected.has(rowId(order))} onChange={() => selection.toggle(rowId(order))} />
+                  </TableCell>
                   <TableCell className="text-cyan-400 light:text-blue-600 font-medium">{order.sourceSilo || '-'}</TableCell>
                   <TableCell className="text-white light:text-gray-900">
                     <div className="flex flex-col">
@@ -395,6 +416,9 @@ export function OrderHistory() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700/30 light:border-gray-200 hover:bg-slate-800/50 light:hover:bg-gray-50">
+                <TableHead className="w-10">
+                  <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label="Select all shown rows" checked={selection.allSelected} onChange={selection.toggleAll} />
+                </TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">PIT No</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Raw Material</TableHead>
                 <TableHead className="text-white light:text-gray-900 font-semibold">Quantity (KG)</TableHead>
@@ -410,7 +434,10 @@ export function OrderHistory() {
             </TableHeader>
             <TableBody>
               {data.map((order, index) => (
-                <TableRow key={order.id} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                <TableRow key={rowId(order)} className={`border-slate-700/30 light:border-gray-200 hover:bg-slate-800/30 light:hover:bg-gray-50 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20 light:bg-gray-50' : 'bg-slate-800/10 light:bg-gray-100'}`}>
+                  <TableCell className="w-10">
+                    <input type="checkbox" className="h-4 w-4 accent-cyan-500 cursor-pointer" aria-label={`Select order ${order.badgeNo || order.sourceSilo || order.pitNo || order.id}`} checked={selection.selected.has(rowId(order))} onChange={() => selection.toggle(rowId(order))} />
+                  </TableCell>
                   <TableCell className="text-cyan-400 light:text-blue-600 font-medium">{order.pitNo || '-'}</TableCell>
                   <TableCell className="text-white light:text-gray-900">
                     <div className="flex flex-col">
@@ -472,6 +499,133 @@ export function OrderHistory() {
       default:
         return []
     }
+  }
+
+
+  // ---- Print / row selection -------------------------------------------------
+  type TabInfo = { type: 'intake' | 'outloading' | 'bulk' | 'pit'; line: number; title: string }
+  const TAB_INFO: Record<string, TabInfo> = {
+    'intake-line-1': { type: 'intake', line: 1, title: 'Intake Line 1 Orders' },
+    'intake-line-2': { type: 'intake', line: 2, title: 'Intake Line 2 Orders' },
+    'mineral-intake': { type: 'intake', line: 3, title: 'Mineral Intake Orders' },
+    'outloading-1': { type: 'outloading', line: 1, title: 'Outloading 1 Orders' },
+    'outloading-2': { type: 'outloading', line: 2, title: 'Outloading 2 Orders' },
+    'outloading-3': { type: 'outloading', line: 3, title: 'Outloading 3 Orders' },
+    'bulk-line': { type: 'bulk', line: 1, title: 'Bulk Line Orders' },
+    'pt-line': { type: 'pit', line: 1, title: 'PIT Line Orders' },
+  }
+  const activeInfo: TabInfo | undefined = TAB_INFO[activeTab]
+
+  // Rows currently rendered in the table of the active tab (nothing while loading / on error).
+  const shownRows: OrderData[] = !activeInfo || loading || error
+    ? []
+    : filteredOrders(getOrdersByLine(activeInfo.type, activeInfo.line))
+
+  // Unique and stable: order type + database id.
+  const rowId = (order: OrderData) => `${activeInfo?.type ?? 'order'}-${order.id}`
+
+  const selection = useRowSelection(shownRows.map(rowId))
+  const [printError, setPrintError] = useState<string | null>(null)
+
+  const statusText = (order: OrderData) => {
+    if (order.isComplete) return 'Completed'
+    if (order.statusWord === '1') return 'Idle'
+    if (['2', '6'].includes(order.statusWord)) return 'Running'
+    return `Status: ${order.statusWord}`
+  }
+  const materialText = (code?: string, name?: string) => [code, name].filter(Boolean).join(' ') || '-'
+  const siloText = (silo?: string, name?: string) => `Silo ${silo || '-'} ${name || '-'}`
+
+  const printColumns = (type: TabInfo['type']): ExportColumn<OrderData>[] => {
+    const qty: ExportColumn<OrderData> = { header: 'Quantity (KG)', numeric: true, cell: o => o.declaredQuantityKG || 0, excel: o => Number(o.declaredQuantityKG) || 0 }
+    const dest: ExportColumn<OrderData>[] = [
+      { header: 'Destination 1 (Material)', cell: o => siloText(o.destinationSilo1, o.destinationSilo1MaterialName) },
+      { header: 'Destination 2 (Material)', cell: o => siloText(o.destinationSilo2, o.destinationSilo2MaterialName) },
+    ]
+    const status: ExportColumn<OrderData> = { header: 'Status', cell: statusText }
+    const times: ExportColumn<OrderData>[] = [
+      { header: 'Created', cell: o => formatDateTime(o.createdAt) },
+      { header: 'Started', cell: o => formatDateTime(o.startedAt) },
+      { header: 'Finished', cell: o => formatDateTime(o.finishedAt) },
+    ]
+    if (type === 'bulk') {
+      return [
+        { header: 'Source Silo', cell: o => o.sourceSilo || '-' },
+        { header: 'Source Material', cell: o => materialText(o.sourceMaterialCode, o.sourceMaterialName) },
+        qty, ...dest,
+        { header: 'CC25 Sel', cell: o => o.cc25Sel || '-' },
+        { header: 'Scale Sel', cell: o => o.scaleSel || '-' },
+        status, ...times,
+      ]
+    }
+    if (type === 'pit') {
+      return [
+        { header: 'PIT No', cell: o => o.pitNo || '-' },
+        { header: 'Raw Material', cell: o => materialText(o.rawCode, o.rawMaterialName) },
+        qty, ...dest,
+        { header: 'Scale Sel', cell: o => o.scaleSel || '-' },
+        status, ...times,
+      ]
+    }
+    return [
+      { header: 'RFID', cell: o => o.badgeNo || '-' },
+      { header: 'Source Material', cell: o => materialText(o.sourceMaterialCode, o.sourceMaterialName) },
+      qty, ...dest,
+      { header: 'Line', cell: o => o.line || '-' },
+      status, ...times,
+    ]
+  }
+
+  // What gets printed or exported: the ticked rows, or every row shown when none is ticked.
+  const orderTable = () => {
+    if (!activeInfo) return null
+    const rows = rowsToPrint(shownRows, selection.selected, rowId)
+    const columns = printColumns(activeInfo.type)
+    const subtitles: string[] = [activeInfo.title]
+    if (statusFilter === 'active') subtitles.push('Status: Active orders only')
+    if (statusFilter === 'completed') subtitles.push('Status: Completed orders only')
+    if (searchTerm.trim() !== '') subtitles.push(`Search: "${searchTerm.trim()}"`)
+    if (dateFrom && dateTo) subtitles.push(`Date range: ${format(dateFrom, 'MMM dd, yyyy')} to ${format(dateTo, 'MMM dd, yyyy')}`)
+    else if (dateFrom) subtitles.push(`From: ${format(dateFrom, 'MMM dd, yyyy')}`)
+    else if (dateTo) subtitles.push(`Up to: ${format(dateTo, 'MMM dd, yyyy')}`)
+    if (selection.count > 0) subtitles.push(`${rows.length} of ${shownRows.length} rows selected`)
+
+    const total = Math.round(rows.reduce((sum, o) => sum + (Number(o.declaredQuantityKG) || 0), 0) * 100) / 100
+    const qtyIndex = columns.findIndex(c => c.header === 'Quantity (KG)')
+    const footer = columns.map((_, i) => (i === 0 ? `${rows.length} rows` : i === qtyIndex ? String(total) : ''))
+    const excelFooter = columns.map((_, i) => (i === 0 ? `${rows.length} rows` : i === qtyIndex ? total : ''))
+    return { rows, columns, subtitles, footer, excelFooter }
+  }
+
+  const handlePrint = async () => {
+    const t = orderTable()
+    if (!t || !activeInfo) return
+    setPrintError(null)
+    const err = await printTable<OrderData>({
+      title: 'Order History',
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: t.rows,
+      footer: t.footer,
+      landscape: t.columns.length > 7,
+    })
+    if (err) setPrintError(err)
+  }
+
+  const handleExcel = async () => {
+    const t = orderTable()
+    if (!t || !activeInfo) return
+    setPrintError(null)
+    const err = await exportTableToExcel<OrderData>({
+      title: 'Order History',
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: t.rows,
+      footer: t.excelFooter,
+      filename: `order-history_${activeTab}`,
+      sheetName: activeInfo.title.slice(0, 31),
+    })
+    if (err) setPrintError(err)
   }
 
   const allOrders = orders ? [
@@ -613,8 +767,19 @@ export function OrderHistory() {
                 <Button onClick={fetchOrders} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300">
                   <RefreshCw className="h-4 w-4" />
                 </Button>
+
+                <Button onClick={handlePrint} disabled={shownRows.length === 0} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300" data-testid={`order-history-${activeTab}-print`}>
+                  <Printer className="mr-2 h-4 w-4" />
+                  {selection.count > 0 ? `Print selected (${selection.count})` : 'Print'}
+                </Button>
+
+                <Button onClick={handleExcel} disabled={shownRows.length === 0} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300" data-testid={`order-history-${activeTab}-excel`}>
+                  <FileSpreadsheet className="mr-2 h-4 w-4" />
+                  {selection.count > 0 ? `Export selected (${selection.count})` : 'Export Excel'}
+                </Button>
               </div>
             </div>
+            {printError && <p className="mt-3 text-sm text-red-400 light:text-red-600">{printError}</p>}
           </CardContent>
         </Card>
 

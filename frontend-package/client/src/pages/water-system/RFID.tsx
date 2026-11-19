@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { API_BASE_URL } from '../../config/api'
-import { Filter, Eye, Pencil, Trash2, Plus, Activity, CheckCircle, XCircle, AlertTriangle } from 'lucide-react'
+import { Filter, Eye, Pencil, Trash2, Plus, Activity, CheckCircle, XCircle, AlertTriangle, Printer, FileSpreadsheet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useToast } from '@/hooks/use-toast'
+import { printTable } from '../../utils/printTable'
+import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
 
 // Mock RFID table data based on the provided image
 const rfidTableData = [
@@ -223,6 +225,36 @@ export function RFID() {
     )
   })
 
+  // Print / Excel of the tags shown after the filters, without the action buttons.
+  const rfidColumns: ExportColumn<any>[] = [
+    { header: 'RFID Number', cell: (item) => item.rfid_number },
+    { header: 'RFID Used', cell: (item) => (item.rfid_used === true || item.rfid_used === 'true' ? 'True' : 'False') },
+    { header: 'RFID Linked to Order', cell: (item) => item.rfid_linked_to_order },
+  ]
+  const rfidSubtitles = () => {
+    const sub = [`${filteredTableData.length} of ${rfidTableData.length} tags`]
+    if (tableFilters.rfidNumber) sub.push(`RFID Number: ${tableFilters.rfidNumber}`)
+    if (tableFilters.rfidUsed !== 'all') sub.push(`RFID Used: ${tableFilters.rfidUsed === 'true' ? 'True' : 'False'}`)
+    if (tableFilters.rfidLinkedToOrder !== 'all') sub.push(`Linked to Order: ${tableFilters.rfidLinkedToOrder}`)
+    return sub
+  }
+  const showListError = (err: string | null) => {
+    if (err) toast({ title: 'Could not export', description: err, variant: 'destructive' })
+  }
+  const handleRfidPrint = async () => {
+    showListError(await printTable({ title: 'RFID Configuration', subtitles: rfidSubtitles(), columns: rfidColumns, rows: filteredTableData }))
+  }
+  const handleRfidExcel = async () => {
+    showListError(await exportTableToExcel({
+      title: 'RFID Configuration',
+      subtitles: rfidSubtitles(),
+      columns: rfidColumns,
+      rows: filteredTableData,
+      filename: 'rfid',
+      sheetName: 'RFID',
+    }))
+  }
+
   const clearTableFilters = () => {
     setTableFilters({
       rfidNumber: '',
@@ -305,7 +337,25 @@ export function RFID() {
         </div>
 
         {/* Add Button */}
-        <div className="flex justify-end mb-4">
+        <div className="flex justify-end gap-2 mb-4">
+          <Button
+            variant="outline"
+            onClick={() => void handleRfidPrint()}
+            disabled={filteredTableData.length === 0}
+            className="border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+            data-testid="rfid-print"
+          >
+            <Printer className="h-4 w-4 mr-2" /> Print
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleRfidExcel()}
+            disabled={filteredTableData.length === 0}
+            className="border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+            data-testid="rfid-excel"
+          >
+            <FileSpreadsheet className="h-4 w-4 mr-2" /> Export Excel
+          </Button>
           <Button className="bg-green-600 text-white light:bg-green-600 light:text-white hover:bg-green-700 light:hover:bg-green-700" onClick={handleAdd}><Plus className="h-4 w-4 mr-2" /> Add RFID</Button>
         </div>
 

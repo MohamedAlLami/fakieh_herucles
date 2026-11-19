@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import struct
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 PALLET_DB_NUMBER = 7
 PALLET_DB_START = 0
 PALLET_DB_SIZE = 42
+# The four FullRun bits sit in byte 42 (DB7 is 44 bytes once they are downloaded).
+PALLET_DB_FULL_SIZE = 44
+PALLET_FULL_LAYOUT_RETRY_SECONDS = 60
+PALLET_FULL_LAYOUT_GIVE_UP_READS = 150  # about five minutes of failed reads
 PALLET_HISTORY_LOCK_KEY = 7_061_001
 PALLET_HISTORY_SAMPLE_SECONDS = 60
 PALLET_HISTORY_SESSION_GAP_SECONDS = 150
@@ -41,6 +46,15 @@ P3_P4_RUNNING_BIT = 0
 P3_P4_SELECTION_OFFSET = 36
 P3_P4_QTY_OFFSET = 38
 
+# FullRun: TRUE from the start of an order to its end, pauses included.
+# Running: TRUE only while the line is actually working.
+FULL_RUN_BYTE = 42
+FULL_RUN_BITS = {"P1": 0, "P2": 1, "P3": 2, "P4": 3}
+
+_full_layout_retry_at = 0.0
+_full_layout_seen = False
+_full_layout_failures = 0
+
 
 class PalletPLCReadError(RuntimeError):
     """Raised when DB7 cannot be read or decoded safely."""
@@ -68,6 +82,13 @@ def decode_pallet_db7(buffer: bytes | bytearray) -> Dict[str, Dict[str, Any]]:
             f"Malformed DB7 response: expected {PALLET_DB_SIZE} bytes, got {len(buffer)}"
         )
 
+    # None = this PLC does not have the FullRun bits (old 42-byte DB7).
+    full_run: Dict[str, Optional[bool]] = {line: None for line in FULL_RUN_BITS}
+    if len(buffer) > FULL_RUN_BYTE:
+        full_run = {
+            line: decode_bool(buffer, FULL_RUN_BYTE, bit) for line, bit in FULL_RUN_BITS.items()
+        }
+
     try:
         decoded = {
             "P1": {
@@ -77,6 +98,7 @@ def decode_pallet_db7(buffer: bytes | bytearray) -> Dict[str, Dict[str, Any]]:
                 "destination2": decode_int(buffer, P1_DEST2_OFFSET),
                 "running": decode_bool(buffer, P1_RUNNING_BYTE, P1_RUNNING_BIT),
                 "quantity": decode_real(buffer, P1_QTY_OFFSET),
+                "full_run": full_run["P1"],
             },
             "P2": {
                 "source1": decode_int(buffer, P2_SOURCE1_OFFSET),
@@ -85,6 +107,7 @@ def decode_pallet_db7(buffer: bytes | bytearray) -> Dict[str, Dict[str, Any]]:
                 "destination2": decode_int(buffer, P2_DEST2_OFFSET),
                 "running": decode_bool(buffer, P2_RUNNING_BYTE, P2_RUNNING_BIT),
                 "quantity": decode_real(buffer, P2_QTY_OFFSET),
+                "full_run": full_run["P2"],
             },
             "P3_P4": {
                 "source": decode_int(buffer, P3_P4_SOURCE_OFFSET),
@@ -93,6 +116,8 @@ def decode_pallet_db7(buffer: bytes | bytearray) -> Dict[str, Dict[str, Any]]:
                 "running": decode_bool(buffer, P3_P4_RUNNING_BYTE, P3_P4_RUNNING_BIT),
                 "selection": decode_int(buffer, P3_P4_SELECTION_OFFSET),
                 "quantity": decode_real(buffer, P3_P4_QTY_OFFSET),
+                "full_run_p3": full_run["P3"],
+                "full_run_p4": full_run["P4"],
             },
         }
         quantities = (
@@ -107,6 +132,60 @@ def decode_pallet_db7(buffer: bytes | bytearray) -> Dict[str, Dict[str, Any]]:
         raise PalletPLCReadError(f"Invalid DB7 pallet data: {exc}") from exc
 
 
+def _read_db7_raw(read_db_bytes: Callable[[int, int], Any]):
+    """Read DB7 with the FullRun byte; use the old 42 bytes only if the PLC really lacks it.
+
+    A PLC that has not had the new DB7 downloaded yet must keep working exactly as
+    before. But a momentary read failure must never be mistaken for "no FullRun
+    bits": that would close a paused order. So:
+      - once a 44-byte read has worked, a failed read is just a failed read;
+      - before that, the PLC counts as old only when the 44-byte read fails twice
+        around a 42-byte read that works. It is then asked again once a minute.
+    """
+    global _full_layout_retry_at, _full_layout_seen, _full_layout_failures
+    if _full_layout_seen:
+        raw = read_db_bytes(PALLET_DB_NUMBER, PALLET_DB_FULL_SIZE)
+        if raw is not None and len(raw) > FULL_RUN_BYTE:
+            _full_layout_failures = 0
+            return raw
+        _full_layout_failures += 1
+        if _full_layout_failures >= PALLET_FULL_LAYOUT_GIVE_UP_READS:
+            # The byte has been gone for a long time: look at the PLC afresh.
+            _full_layout_seen = False
+            _full_layout_failures = 0
+        return None
+
+    now = time.monotonic()
+    if now < _full_layout_retry_at:
+        return read_db_bytes(PALLET_DB_NUMBER, PALLET_DB_SIZE)
+
+    def long_read():
+        raw = read_db_bytes(PALLET_DB_NUMBER, PALLET_DB_FULL_SIZE)
+        return raw if raw is not None and len(raw) > FULL_RUN_BYTE else None
+
+    raw = long_read()
+    if raw is None:
+        short = read_db_bytes(PALLET_DB_NUMBER, PALLET_DB_SIZE)
+        if short is None or len(short) < PALLET_DB_SIZE:
+            return None  # PLC not answering at all: nothing learnt, ask again next cycle
+        raw = long_read()
+        if raw is None:
+            _full_layout_retry_at = now + PALLET_FULL_LAYOUT_RETRY_SECONDS
+            return short
+    _full_layout_seen = True
+    _full_layout_failures = 0
+    return raw
+
+
+def line_full_run(data: Mapping[str, Mapping[str, Any]], line: str) -> Optional[bool]:
+    """The FullRun bit of one line: True, False, or None when the PLC has no such bit."""
+    if line in ("P1", "P2"):
+        value = data[line].get("full_run")
+    else:
+        value = data["P3_P4"].get("full_run_p3" if line == "P3" else "full_run_p4")
+    return None if value is None else bool(value)
+
+
 def read_pallet_db7() -> Dict[str, Dict[str, Any]]:
     """Read DB7 once via the application's existing Snap7 connection manager."""
     try:
@@ -114,7 +193,7 @@ def read_pallet_db7() -> Dict[str, Dict[str, Any]]:
 
         if DEMO_MODE:
             raise PalletPLCReadError("Live pallet data is unavailable in PLC demo mode")
-        raw = read_db_bytes(PALLET_DB_NUMBER, PALLET_DB_SIZE)
+        raw = _read_db7_raw(read_db_bytes)
         if raw is None:
             raise PalletPLCReadError("PLC unavailable or DB7 could not be read")
         data = decode_pallet_db7(raw)
@@ -131,7 +210,7 @@ def build_live_lines(data: Mapping[str, Mapping[str, Any]]) -> Dict[str, Dict[st
     lines: Dict[str, Dict[str, Any]] = {}
     for line in ("P1", "P2"):
         source = data[line]
-        lines[line] = {"line": line, **dict(source)}
+        lines[line] = {"line": line, **dict(source), "full_run": line_full_run(data, line)}
 
     shared = data["P3_P4"]
     selection = int(shared["selection"])
@@ -148,6 +227,7 @@ def build_live_lines(data: Mapping[str, Mapping[str, Any]]) -> Dict[str, Dict[st
             "running": shared_running and selected,
             "selected": selected,
             "selection": selection,
+            "full_run": line_full_run(data, line),
         }
     return lines
 
@@ -156,7 +236,12 @@ def build_snapshot_rows(
     data: Mapping[str, Mapping[str, Any]],
     recorded_at: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
-    """Return only running-line snapshots, including both rows for selection 5."""
+    """Return one snapshot per line whose order is open.
+
+    An order is open while the line is running or its FullRun bit is on. A row
+    stored with running=False is a paused minute: it counts for the full run
+    but not for the actual run. Selection 5 still gives both P3 and P4 a row.
+    """
     # One canonical timestamp per minute also makes the database uniqueness
     # guard effective when two application processes fire a few seconds apart.
     timestamp = (recorded_at or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
@@ -164,7 +249,8 @@ def build_snapshot_rows(
 
     for line in ("P1", "P2"):
         values = data[line]
-        if values["running"]:
+        full_run = line_full_run(data, line)
+        if values["running"] or full_run:
             rows.append(
                 {
                     "line": line,
@@ -173,19 +259,22 @@ def build_snapshot_rows(
                     "destination1": values["destination1"],
                     "destination2": values["destination2"],
                     "quantity": values["quantity"],
-                    "running": True,
+                    "running": bool(values["running"]),
+                    "full_run": full_run,
                     "selection": None,
                     "recorded_at": timestamp,
                 }
             )
 
     shared = data["P3_P4"]
-    if shared["running"]:
-        selection = int(shared["selection"])
-        selected_lines = {3: ("P3",), 4: ("P4",), 5: ("P3", "P4")}.get(selection, ())
-        if not selected_lines:
-            logger.warning("Invalid P3/P4 selection value: %s", selection)
-        for line in selected_lines:
+    selection = int(shared["selection"])
+    selected_lines = {3: ("P3",), 4: ("P4",), 5: ("P3", "P4")}.get(selection, ())
+    if shared["running"] and not selected_lines:
+        logger.warning("Invalid P3/P4 selection value: %s", selection)
+    for line in ("P3", "P4"):
+        running = bool(shared["running"]) and line in selected_lines
+        full_run = line_full_run(data, line)
+        if running or full_run:
             rows.append(
                 {
                     "line": line,
@@ -194,7 +283,8 @@ def build_snapshot_rows(
                     "destination1": shared["destination1"],
                     "destination2": shared["destination2"],
                     "quantity": shared["quantity"],
-                    "running": True,
+                    "running": running,
+                    "full_run": full_run,
                     "selection": selection,
                     "recorded_at": timestamp,
                 }
@@ -209,9 +299,13 @@ def build_history_sessions(
 ) -> List[Dict[str, Any]]:
     """Collapse consecutive minute snapshots into one production run per line.
 
-    The historian stores rows only while a line is running. A gap larger than
-    the tolerated collection interval therefore marks a stop/start boundary.
-    The last stored quantity is the report quantity for that run.
+    The historian stores rows only while an order is open (the line is running
+    or its FullRun bit is on). A gap larger than the tolerated collection
+    interval therefore marks a stop/start boundary. The last stored quantity is
+    the report quantity for that run.
+
+    Full run = from the first minute to the end. Actual run = only the minutes
+    in which the line was really running.
     """
     current_time = now or datetime.now(timezone.utc)
     ordered = sorted(snapshots, key=lambda row: (row.line, row.recorded_at, row.id))
@@ -241,6 +335,15 @@ def build_history_sessions(
                 seconds=PALLET_HISTORY_SAMPLE_SECONDS
             )
             duration_end = current_time if running else end_time
+
+            full_seconds = max(0, int((duration_end - first.recorded_at).total_seconds()))
+            running_minutes = sum(1 for row in session_rows if getattr(row, "running", True))
+            if running_minutes == len(session_rows):
+                # Never paused: the actual run is the whole run.
+                actual_seconds = full_seconds
+            else:
+                actual_seconds = min(full_seconds, running_minutes * PALLET_HISTORY_SAMPLE_SECONDS)
+            paused_now = running and not getattr(last, "running", True)
 
             movements: List[Dict[str, Any]] = []
             previous_route = None
@@ -289,9 +392,10 @@ def build_history_sessions(
                     "selection": last.selection,
                     "actual_start_time": first.recorded_at.isoformat(),
                     "actual_end_time": end_time.isoformat() if end_time else None,
-                    "duration_seconds": max(
-                        0, int((duration_end - first.recorded_at).total_seconds())
-                    ),
+                    "duration_seconds": full_seconds,
+                    "full_run_seconds": full_seconds,
+                    "actual_run_seconds": actual_seconds,
+                    "paused": paused_now,
                     "created_at": first.created_at.isoformat() if first.created_at else None,
                     "updated_at": last.created_at.isoformat() if last.created_at else None,
                     "movements": movements,

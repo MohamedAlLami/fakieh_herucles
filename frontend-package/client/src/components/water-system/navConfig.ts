@@ -79,6 +79,12 @@ const managementItems: SidebarNavItem[] = [
     label: 'Clients',
     description: 'Manage client name and contact number',
   },
+  {
+    path: '/fakieh/management/orders',
+    icon: ShoppingCart,
+    label: 'Orders',
+    description: 'Weighbridge orders: product, quantity and client',
+  },
 ]
 
 const weighbridgeItems: SidebarNavItem[] = [
@@ -251,6 +257,7 @@ export const topNavItems: TopNavItem[] = [
       { path: '/fakieh/management/trucks', label: 'Trucks' },
       { path: '/fakieh/management/drivers', label: 'Drivers' },
       { path: '/fakieh/management/clients', label: 'Clients' },
+      { path: '/fakieh/management/orders', label: 'Orders' },
     ],
   },
   {

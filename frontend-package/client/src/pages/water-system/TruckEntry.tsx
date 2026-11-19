@@ -5,12 +5,18 @@ import {
   ArrowUpFromLine,
   BarChart3,
   Crosshair,
+  ClipboardList,
+  FileSpreadsheet,
   Hourglass,
+  Layers,
+  MapPin,
   Package,
+  Printer,
   RefreshCw,
   Scale,
   Trash2,
   Truck,
+  User,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -18,7 +24,9 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -41,18 +49,28 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { API_BASE_URL } from "../../config/api";
-import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { useMaterialCodes } from "../../constants/materialCodes";
 import truck3 from "@/assets/truck3.png";
+import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
+import { SearchableSelect } from "../../components/water-system/SearchableSelect";
+import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbridgeOrders";
+import { printTable } from "../../utils/printTable";
+import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
+  fetchAllDrivers,
   fetchCompletedToday,
   fetchOpenOrders,
   fetchScaleLive,
+  fetchSilosForMaterial,
   fetchTruckWeighOrder,
   saveFirstWeight,
   saveSecondWeight,
+  type DriverOption,
   type ScaleLiveReading,
+  type SilosForMaterial,
+  type SiloOption,
   type TruckWeighOrder,
 } from "../../api/truckEntry";
 
@@ -81,6 +99,13 @@ function fmtWeight(kg: number | null | undefined) {
   return kg.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 }
 
+const NO_SILOS: SilosForMaterial = { matching: [], unassigned: [], tempMatching: [], tempFree: [] };
+
+function siloLabel(s: SiloOption) {
+  const name = s.materialName ? ` — ${s.materialName}` : "";
+  return `Silo ${s.siloNo}${name} — ${fmtWeight(s.quantityKg)} kg`;
+}
+
 function rowTimestamp(o: TruckWeighOrder) {
   return o.second_ts || o.first_ts || o.created_at || "";
 }
@@ -97,6 +122,18 @@ export default function TruckEntry() {
 
   const [newTruckId, setNewTruckId] = useState("");
   const [newMaterialCode, setNewMaterialCode] = useState("");
+  const [newSiloNo, setNewSiloNo] = useState("");
+  // Weighbridge order (optional): gives the trip its product, client and ordered quantity.
+  const [newOrderNo, setNewOrderNo] = useState("");
+  // Driver (from Management > Drivers) and loading point 1-3, both optional.
+  const [newDriverId, setNewDriverId] = useState("");
+  const [newLoadingPoint, setNewLoadingPoint] = useState("");
+  const [drivers, setDrivers] = useState<DriverOption[]>([]);
+  const [wbOrders, setWbOrders] = useState<WeighbridgeOrder[]>([]);
+  const [silos, setSilos] = useState<SilosForMaterial>(NO_SILOS);
+  const [silosState, setSilosState] = useState<"idle" | "loading" | "error">("idle");
+  const [silosReload, setSilosReload] = useState(0);
+  const [tempDialogOpen, setTempDialogOpen] = useState(false);
   const [newEntryFormKey, setNewEntryFormKey] = useState(0);
 
   const [liveReading, setLiveReading] = useState<ScaleLiveReading | null>(null);
@@ -104,7 +141,7 @@ export default function TruckEntry() {
   const [livePolling, setLivePolling] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TruckWeighOrder | null>(null);
 
-  const selectableMaterials = useMemo(() => getSelectableMaterialCodes(), []);
+  const selectableMaterials = useMaterialCodes();
 
   const outPendingOrders = useMemo(
     () => openOrders.filter((o) => o.status === "awaiting_second"),
@@ -127,11 +164,92 @@ export default function TruckEntry() {
     [truckData, busyTruckIds]
   );
 
+  // When a trip is open its truck is no longer "available", but the field must still show it.
+  const truckOptions = useMemo(() => {
+    const list = availableTrucks.slice();
+    const current = truckData.find((t) => String(t.id) === newTruckId);
+    if (current && !list.some((t) => t.id === current.id)) list.unshift(current);
+    return list.map((t) => ({
+      value: String(t.id),
+      label: `${t.license}${t.model ? ` — ${t.model}` : ""}`,
+    }));
+  }, [availableTrucks, truckData, newTruckId]);
+  const orderOptions = useMemo(
+    () => [
+      { value: "", label: "No order" },
+      ...wbOrders
+        .slice()
+        .sort((a, b) => a.order_no - b.order_no)
+        .map((o) => ({
+          value: String(o.order_no),
+          label: `${o.order_no} — ${o.product_code} ${o.product_name} — ${fmtWeight(o.quantity_kg)} kg — ${o.client_name}`,
+        })),
+    ],
+    [wbOrders]
+  );
+  const selectedOrder = wbOrders.find((o) => String(o.order_no) === newOrderNo) ?? null;
+
+  const driverOptions = useMemo(
+    () => [
+      { value: "", label: "No driver" },
+      ...drivers.map((d) => ({
+        value: String(d.id),
+        label: `${d.id} — ${d.name}${d.license_no ? ` — ${d.license_no}` : ""}`,
+      })),
+    ],
+    [drivers]
+  );
+  const selectedDriver = drivers.find((d) => String(d.id) === newDriverId) ?? null;
+  const loadingPointOptions = useMemo(
+    () => [
+      { value: "", label: "No loading point" },
+      { value: "1", label: "Loading point 1" },
+      { value: "2", label: "Loading point 2" },
+      { value: "3", label: "Loading point 3" },
+    ],
+    []
+  );
+
+  const materialOptions = useMemo(
+    () => selectableMaterials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
+    [selectableMaterials]
+  );
+
   const isEntryPhase = activeOrder?.status === "awaiting_first";
   const isExitPhase = activeOrder?.status === "awaiting_second";
 
   const selectedTruck = truckData.find((t) => String(t.id) === newTruckId);
   const selectedMaterial = selectableMaterials.find((m) => m.code === newMaterialCode);
+  const selectedSilo = [
+    ...silos.matching,
+    ...silos.unassigned,
+    ...silos.tempMatching,
+    ...silos.tempFree,
+  ].find(
+    (s) => String(s.siloNo) === newSiloNo
+  );
+
+  // Silo choices follow the chosen material.
+  useEffect(() => {
+    if (!newMaterialCode) {
+      setSilos(NO_SILOS);
+      setSilosState("idle");
+      return;
+    }
+    const ctrl = new AbortController();
+    setSilosState("loading");
+    fetchSilosForMaterial(newMaterialCode, ctrl.signal)
+      .then((r) => {
+        setSilos(r);
+        setSilosState("idle");
+      })
+      .catch((err: unknown) => {
+        if ((err as Error)?.name === "AbortError") return;
+        setSilos(NO_SILOS);
+        setSilosState("error");
+      });
+    return () => ctrl.abort();
+  }, [newMaterialCode, silosReload]);
 
   /** New entry ready: truck + material chosen — live Scale 1 before capture */
   const readyForNewEntry = Boolean(newTruckId && newMaterialCode) && !isExitPhase;
@@ -192,6 +310,13 @@ export default function TruckEntry() {
       ]);
       setOpenOrders(open);
       setCompletedToday(today.rows ?? []);
+      // Open weighbridge orders for the Order Number field. The page works without them.
+      fetchWeighbridgeOrders("open", signal)
+        .then((r) => setWbOrders(r.orders))
+        .catch(() => undefined);
+      fetchAllDrivers(signal)
+        .then(setDrivers)
+        .catch(() => undefined);
       setActiveOrder((prev) => {
         if (!prev) return null;
         return open.find((o) => o.id === prev.id) ?? null;
@@ -317,6 +442,10 @@ export default function TruckEntry() {
   function resetNewEntryForm() {
     setNewTruckId("");
     setNewMaterialCode("");
+    setNewSiloNo("");
+    setNewOrderNo("");
+    setNewDriverId("");
+    setNewLoadingPoint("");
     setNewEntryFormKey((k) => k + 1);
   }
 
@@ -367,8 +496,20 @@ export default function TruckEntry() {
           setLoading(false);
           return;
         }
+        if (!newSiloNo) {
+          setErrorMsg("Select a silo.");
+          setLoading(false);
+          return;
+        }
         try {
-          order = await createTruckWeighOrder(truckId, newMaterialCode);
+          order = await createTruckWeighOrder(
+            truckId,
+            newMaterialCode,
+            Number(newSiloNo),
+            newOrderNo ? Number(newOrderNo) : null,
+            newDriverId ? Number(newDriverId) : null,
+            newLoadingPoint ? Number(newLoadingPoint) : null
+          );
         } catch (err: unknown) {
           const conflict = err as Error & { code?: string; orderId?: number };
           if (conflict?.code === "OPEN_ORDER" && conflict.orderId) {
@@ -414,6 +555,63 @@ export default function TruckEntry() {
 
   const showTruckVisual = Boolean(previewTruck || activeOrder);
   const showInMode = !isExitPhase;
+
+  // Print / Excel of the Open Trips table: same rows and columns as shown, without the Action column.
+  function openTripsTable() {
+    const exitKgOf = (row: TruckWeighOrder) =>
+      activeOrder?.id === row.id && isExitPhase && liveKg != null ? liveKg : row.second_weight_kg ?? null;
+    const raw = (n?: number | null) => (n != null && !Number.isNaN(n) ? Math.round(n) : null);
+    const statusText = (row: TruckWeighOrder) =>
+      activeOrder?.id === row.id && activeScaleId
+        ? "On Scale"
+        : row.status === "awaiting_second"
+          ? "Exit Pending"
+          : "Entry Pending";
+    const columns: ExportColumn<TruckWeighOrder>[] = [
+      { header: "Time", cell: (r) => fmtTime(rowTimestamp(r)) },
+      { header: "Order", cell: (r) => (r.order_no != null ? r.order_no : "—") },
+      { header: "Truck No", cell: (r) => r.truck_plate ?? `Truck ${r.truck_id}` },
+      { header: "Material", cell: (r) => r.material_name ?? r.material_code },
+      {
+        header: "Silo",
+        cell: (r) =>
+          r.silo_no != null
+            ? `Silo ${r.silo_no}${r.silo_no >= 1001 && r.silo_no <= 1200 ? " (temp)" : ""}`
+            : "—",
+      },
+      { header: "Type", cell: (r) => (r.status === "awaiting_first" ? "IN" : "OUT") },
+      { header: "Entry Weight (kg)", cell: (r) => fmtWeight(r.first_weight_kg ?? null), excel: (r) => raw(r.first_weight_kg), numeric: true },
+      { header: "Exit Weight (kg)", cell: (r) => fmtWeight(exitKgOf(r)), excel: (r) => raw(exitKgOf(r)), numeric: true },
+      { header: "Status", cell: statusText },
+    ];
+    const subtitles = [`${openTripRows.length} open trip${openTripRows.length === 1 ? "" : "s"}`];
+    return { columns, subtitles };
+  }
+
+  async function handleOpenTripsPrint() {
+    const t = openTripsTable();
+    const err = await printTable({
+      title: "Open Trips — On Site",
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: openTripRows,
+      landscape: true,
+    });
+    if (err) setErrorMsg(err);
+  }
+
+  async function handleOpenTripsExcel() {
+    const t = openTripsTable();
+    const err = await exportTableToExcel({
+      title: "Open Trips — On Site",
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: openTripRows,
+      filename: "open-trips",
+      sheetName: "Open Trips",
+    });
+    if (err) setErrorMsg(err);
+  }
 
   function statusBadge(row: TruckWeighOrder) {
     if (activeOrder?.id === row.id && activeScaleId) {
@@ -494,44 +692,166 @@ export default function TruckEntry() {
                 Select truck and material — live Scale 1 weight appears, then Capture Entry
               </p>
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="ml-auto h-8 bg-transparent border wb-border wb-text-sec hover:opacity-90 light:border-gray-300 light:bg-white"
+              onClick={() => setTempDialogOpen(true)}
+              data-testid="open-temp-silos"
+            >
+              <Layers className="h-3.5 w-3.5 mr-1.5" />
+              Temporary silos
+            </Button>
           </div>
 
           <div
             key={newEntryFormKey}
-            className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end"
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3 items-end"
           >
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Order Number (optional)
+              </label>
+              <SearchableSelect
+                value={newOrderNo}
+                onChange={(v) => {
+                  setNewOrderNo(v);
+                  const o = wbOrders.find((x) => String(x.order_no) === v);
+                  if (o) {
+                    // The order decides the material.
+                    setNewMaterialCode(o.product_code);
+                    setNewSiloNo("");
+                  }
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={orderOptions}
+                placeholder="Type order number"
+                disabled={isExitPhase}
+                icon={<ClipboardList className="h-3.5 w-3.5" />}
+                testId="select-order"
+                listMinWidth={520}
+              />
+            </div>
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                 Select Truck
               </label>
-              <Select
-                value={newTruckId || undefined}
-                onValueChange={(v) => {
+              <SearchableSelect
+                value={newTruckId}
+                onChange={(v) => {
                   setNewTruckId(v);
+                  // Propose the driver assigned to this truck; the operator can change it.
+                  const usual =
+                    drivers.find((d) => String(d.truck_id) === v && d.status === "Active") ??
+                    drivers.find((d) => String(d.truck_id) === v);
+                  setNewDriverId(usual ? String(usual.id) : "");
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
+                options={truckOptions}
+                placeholder="Select or type truck plate"
+                emptyText="No free trucks — all have open trips"
                 disabled={isExitPhase}
+                icon={<Truck className="h-3.5 w-3.5" />}
+                testId="select-truck"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Select Material
+              </label>
+              <SearchableSelect
+                value={newMaterialCode}
+                onChange={(v) => {
+                  setNewMaterialCode(v);
+                  setNewSiloNo("");
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={materialOptions}
+                placeholder="Select or type material"
+                disabled={isExitPhase || Boolean(selectedOrder)}
+                icon={<Package className="h-3.5 w-3.5" />}
+                testId="select-material"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Select Silo
+              </label>
+              <Select
+                value={newSiloNo || undefined}
+                onValueChange={(v) => {
+                  setNewSiloNo(v);
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                disabled={isExitPhase || !newMaterialCode}
               >
                 <SelectTrigger className="wb-input h-12 wb-text">
-                  <SelectValue placeholder="Select truck" />
+                  <SelectValue placeholder={newMaterialCode ? "Select silo" : "Select material first"} />
                 </SelectTrigger>
-                <SelectContent className="wb-select-content wb-text">
-                  {availableTrucks.length === 0 ? (
-                    <div className="px-3 py-2 text-xs wb-text-muted">
-                      No free trucks — all have open trips
-                    </div>
-                  ) : (
-                    availableTrucks.map((truck) => (
-                      <SelectItem key={truck.id} value={String(truck.id)}>
-                        <span className="flex items-center gap-2">
-                          <Truck className="h-3.5 w-3.5 wb-text-cyan shrink-0" />
-                          <span>
-                            {truck.license}
-                            {truck.model ? ` — ${truck.model}` : ""}
-                          </span>
-                        </span>
-                      </SelectItem>
-                    ))
+                <SelectContent className="wb-select-content wb-text max-h-60">
+                  {silosState === "loading" && (
+                    <div className="px-3 py-2 text-xs wb-text-muted">Loading silos…</div>
+                  )}
+                  {silosState === "error" && (
+                    <div className="px-3 py-2 text-xs wb-text-muted">Could not load silos</div>
+                  )}
+                  {silosState === "idle" &&
+                    silos.matching.length === 0 &&
+                    silos.unassigned.length === 0 &&
+                    silos.tempMatching.length === 0 &&
+                    silos.tempFree.length === 0 && (
+                      <div className="px-3 py-2 text-xs wb-text-muted">No suitable silos</div>
+                    )}
+                  {silos.matching.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Silos holding this material
+                      </SelectLabel>
+                      {silos.matching.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.unassigned.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Unassigned silos
+                      </SelectLabel>
+                      {silos.unassigned.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.tempMatching.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Temporary silos holding this material
+                      </SelectLabel>
+                      {silos.tempMatching.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.tempFree.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Free temporary silos (ground)
+                      </SelectLabel>
+                      {silos.tempFree.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {`Silo ${s.siloNo} — free`}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   )}
                 </SelectContent>
               </Select>
@@ -539,32 +859,39 @@ export default function TruckEntry() {
 
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
-                Select Material
+                Driver (optional)
               </label>
-              <Select
-                value={newMaterialCode || undefined}
-                onValueChange={(v) => {
-                  setNewMaterialCode(v);
+              <SearchableSelect
+                value={newDriverId}
+                onChange={(v) => {
+                  setNewDriverId(v);
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
+                options={driverOptions}
+                placeholder="Type driver number or name"
                 disabled={isExitPhase}
-              >
-                <SelectTrigger className="wb-input h-12 wb-text">
-                  <SelectValue placeholder="Select material" />
-                </SelectTrigger>
-                <SelectContent className="wb-select-content wb-text max-h-60">
-                  {selectableMaterials.map((m) => (
-                    <SelectItem key={m.code} value={m.code}>
-                      <span className="flex items-center gap-2">
-                        <Package className="h-3.5 w-3.5 wb-text-cyan shrink-0" />
-                        <span>
-                          {m.code} — {m.name}
-                        </span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                icon={<User className="h-3.5 w-3.5" />}
+                testId="select-driver"
+                listMinWidth={340}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Loading Point (optional)
+              </label>
+              <SearchableSelect
+                value={newLoadingPoint}
+                onChange={(v) => {
+                  setNewLoadingPoint(v);
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={loadingPointOptions}
+                placeholder="1, 2 or 3"
+                disabled={isExitPhase}
+                icon={<MapPin className="h-3.5 w-3.5" />}
+                testId="select-loading-point"
+              />
             </div>
           </div>
         </section>
@@ -746,6 +1073,25 @@ export default function TruckEntry() {
                 </p>
               )}
 
+              {(activeOrder ? activeOrder.order_no != null : Boolean(selectedOrder)) && (
+                <div className="space-y-1.5" data-testid="entry-order">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                    Order
+                  </label>
+                  <div className="wb-input px-3 py-2 text-sm wb-text space-y-0.5">
+                    <div className="font-semibold">
+                      Order {activeOrder ? activeOrder.order_no : selectedOrder?.order_no}
+                    </div>
+                    <div className="wb-text-sec truncate">
+                      Client: {(activeOrder ? activeOrder.order_client_name : selectedOrder?.client_name) || "—"}
+                    </div>
+                    <div className="wb-text-sec">
+                      Ordered: {fmtWeight(activeOrder ? activeOrder.order_quantity_kg : selectedOrder?.quantity_kg)} kg
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                   Selected Truck
@@ -773,6 +1119,44 @@ export default function TruckEntry() {
                     : selectedMaterial
                       ? `${selectedMaterial.code} — ${selectedMaterial.name}`
                       : "—"}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                  Selected Silo
+                </label>
+                <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                  {activeOrder
+                    ? activeOrder.silo_no != null
+                      ? `Silo ${activeOrder.silo_no}${activeOrder.silo_no >= 1001 && activeOrder.silo_no <= 1200 ? " (temporary)" : ""}`
+                      : "—"
+                    : selectedSilo
+                      ? siloLabel(selectedSilo)
+                      : "—"}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2" data-testid="entry-driver-lp">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">Driver</label>
+                  <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                    {activeOrder
+                      ? activeOrder.driver_name
+                        ? `${activeOrder.driver_id} — ${activeOrder.driver_name}`
+                        : "—"
+                      : selectedDriver
+                        ? `${selectedDriver.id} — ${selectedDriver.name}`
+                        : "—"}
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">Loading Point</label>
+                  <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                    {activeOrder
+                      ? activeOrder.loading_point ?? "—"
+                      : newLoadingPoint || "—"}
+                  </div>
                 </div>
               </div>
 
@@ -845,6 +1229,28 @@ export default function TruckEntry() {
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { void handleOpenTripsPrint() }}
+                disabled={openTripRows.length === 0}
+                className="h-7 gap-1 wb-text-sec hover:opacity-90"
+                data-testid="open-trips-print"
+              >
+                <Printer className="h-3.5 w-3.5" />
+                Print
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { void handleOpenTripsExcel() }}
+                disabled={openTripRows.length === 0}
+                className="h-7 gap-1 wb-text-sec hover:opacity-90"
+                data-testid="open-trips-excel"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                Export Excel
+              </Button>
               <Link
                 href="/fakieh/weighbridge"
                 className="text-[11px] font-semibold uppercase tracking-wider wb-text-cyan hover:opacity-80"
@@ -861,8 +1267,10 @@ export default function TruckEntry() {
                   {(
                     [
                       "Time",
+                      "Order",
                       "Truck No",
                       "Material",
+                      "Silo",
                       "Type",
                       "Entry Weight",
                       "Exit Weight",
@@ -901,6 +1309,9 @@ export default function TruckEntry() {
                       <TableCell className="text-xs tabular-nums wb-text-sec py-2.5">
                         {fmtTime(rowTimestamp(row))}
                       </TableCell>
+                      <TableCell className="text-sm wb-text-sec py-2.5 tabular-nums">
+                        {row.order_no != null ? row.order_no : "—"}
+                      </TableCell>
                       <TableCell className="py-2.5">
                         <button
                           type="button"
@@ -914,6 +1325,9 @@ export default function TruckEntry() {
                       </TableCell>
                       <TableCell className="text-sm wb-text py-2.5 max-w-[160px] truncate">
                         {row.material_name ?? row.material_code}
+                      </TableCell>
+                      <TableCell className="text-sm wb-text-sec py-2.5">
+                        {row.silo_no != null ? `Silo ${row.silo_no}${row.silo_no >= 1001 && row.silo_no <= 1200 ? " (temp)" : ""}` : "—"}
                       </TableCell>
                       <TableCell className="py-2.5">
                         <span
@@ -971,7 +1385,7 @@ export default function TruckEntry() {
                 {openTripRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={10}
                       className="text-center py-10 wb-text-muted text-sm"
                     >
                       No open trips — create a new entry above. Finished cycles are on Weighbridge
@@ -983,6 +1397,12 @@ export default function TruckEntry() {
             </Table>
           </div>
         </section>
+
+        <TempSiloDialog
+          open={tempDialogOpen}
+          onOpenChange={setTempDialogOpen}
+          onSaved={() => setSilosReload((n) => n + 1)}
+        />
 
         <AlertDialog
           open={!!deleteTarget}

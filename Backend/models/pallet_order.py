@@ -55,6 +55,11 @@ class PalletOrder(db.Model):
     selection = db.Column(db.Integer, nullable=True)
     actual_start_time = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     actual_end_time = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Actual run: seconds the line was really running inside this order.
+    # NULL on orders from before the FullRun bits (they ran the whole time).
+    active_seconds = db.Column(db.Float, nullable=True)
+    last_running = db.Column(db.Boolean, nullable=True)
+    last_observed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 
@@ -70,10 +75,24 @@ class PalletOrder(db.Model):
     def product_kg(self):
         return self.final_qty if self.status == "COMPLETED" else self.latest_qty
 
-    def to_dict(self):
-        end = self.actual_end_time or datetime.now(timezone.utc)
+    def run_seconds(self, now=None):
+        """(full run, actual run) in whole seconds; the actual run never exceeds the full run."""
+        current = now or datetime.now(timezone.utc)
+        end = self.actual_end_time or current
         start = self.actual_start_time
-        duration = max(0, int((end - start).total_seconds())) if start else None
+        if not start:
+            return None, None
+        full = max(0, int((end - start).total_seconds()))
+        if self.active_seconds is None:
+            return full, full
+        active = float(self.active_seconds)
+        if self.status == "RUNNING" and self.last_running and self.last_observed_at:
+            # Still running since the monitor last looked (it looks every 2 seconds).
+            active += min(10.0, max(0.0, (current - self.last_observed_at).total_seconds()))
+        return full, min(full, max(0, int(active)))
+
+    def to_dict(self):
+        duration, actual = self.run_seconds()
         return {
             "id": self.id,
             "line": self.line,
@@ -95,6 +114,8 @@ class PalletOrder(db.Model):
             "actual_start_time": self.actual_start_time.isoformat() if self.actual_start_time else None,
             "actual_end_time": self.actual_end_time.isoformat() if self.actual_end_time else None,
             "duration_seconds": duration,
+            "full_run_seconds": duration,
+            "actual_run_seconds": actual,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "movements": [movement.to_dict() for movement in self.movements],

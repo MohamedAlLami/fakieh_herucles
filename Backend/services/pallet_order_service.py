@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from services.pallet_report_service import PalletPLCReadError, read_pallet_db7
+from services.pallet_report_service import PalletPLCReadError, line_full_run, read_pallet_db7
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,33 @@ PALLET_MONITOR_LOCK_KEY = 7_062_001
 RUNNING = "RUNNING"
 COMPLETED = "COMPLETED"
 ROUTING_FIELDS = ("source1", "source2", "destination1", "destination2", "selection")
+# The monitor looks every 2 seconds. A longer silence means the backend was
+# down; it is counted as running only if the line runs on both sides of it.
+MAX_UNOBSERVED_TAIL_SECONDS = 10.0
+
+
+def accumulate_active_seconds(
+    active_seconds: Optional[float],
+    last_running: Optional[bool],
+    last_observed_at: Optional[datetime],
+    now: datetime,
+    now_running: bool,
+    order_start: Optional[datetime] = None,
+) -> float:
+    """Actual-run seconds of an order after one more look at the PLC.
+
+    Time since the previous look is added only if the line was running then.
+    An order from before this feature (no counter yet) ran the whole time.
+    """
+    if active_seconds is None:
+        if order_start is None:
+            return 0.0
+        return max(0.0, (now - order_start).total_seconds())
+    total = float(active_seconds)
+    if last_running and last_observed_at is not None:
+        gap = max(0.0, (now - last_observed_at).total_seconds())
+        total += gap if now_running else min(gap, MAX_UNOBSERVED_TAIL_SECONDS)
+    return total
 
 
 def effective_line_values(data: Mapping[str, Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -29,6 +56,7 @@ def effective_line_values(data: Mapping[str, Mapping[str, Any]]) -> Dict[str, Di
             "destination2": values["destination2"],
             "quantity": values["quantity"],
             "selection": None,
+            "full_run": line_full_run(data, line),
         }
 
     shared = data["P3_P4"]
@@ -43,6 +71,7 @@ def effective_line_values(data: Mapping[str, Mapping[str, Any]]) -> Dict[str, Di
             "destination2": shared["destination2"],
             "quantity": shared["quantity"],
             "selection": selection,
+            "full_run": line_full_run(data, line),
         }
     return lines
 
@@ -53,10 +82,15 @@ def process_line_state(
     repository: Any,
     observed_at: Optional[datetime] = None,
 ) -> str:
-    """Apply one line's effective running state to its persisted active order."""
+    """Apply one line's effective state to its persisted active order.
+
+    The order stays open while the line is running or its FullRun bit is on, so
+    a pause inside an order no longer splits it in two. Without FullRun bits
+    (full_run is None) the order follows the running bit as before.
+    """
     timestamp = observed_at or datetime.now(timezone.utc)
     active = repository.get_active(line)
-    if values["running"]:
+    if values["running"] or values.get("full_run"):
         if active is None:
             repository.start(line, values, timestamp)
             return "started"
@@ -152,7 +186,10 @@ class SQLAlchemyPalletOrderRepository:
             start_qty=values.get("quantity"),
             latest_qty=values.get("quantity"),
             final_qty=None,
-            running=True,
+            running=bool(values.get("running")),
+            active_seconds=0.0,
+            last_running=bool(values.get("running")),
+            last_observed_at=timestamp,
             status=RUNNING,
             selection=values.get("selection"),
             actual_start_time=timestamp,
@@ -165,18 +202,39 @@ class SQLAlchemyPalletOrderRepository:
         logger.info("Started pallet order %s %s", line, order.order_description)
         return order
 
+    @staticmethod
+    def _count_active(order: Any, timestamp: datetime, now_running: bool):
+        order.active_seconds = accumulate_active_seconds(
+            order.active_seconds,
+            order.last_running,
+            order.last_observed_at,
+            timestamp,
+            now_running,
+            order.actual_start_time,
+        )
+        order.last_running = now_running
+        order.last_observed_at = timestamp
+
     def update(self, order: Any, values: Mapping[str, Any], timestamp: datetime):
+        now_running = bool(values.get("running"))
+        self._count_active(order, timestamp, now_running)
+        order.running = now_running
+        order.updated_at = timestamp
+        if not now_running:
+            # Paused inside the order: keep the route it was running with. On
+            # P3/P4 the shared selection may already point at the other line.
+            order.latest_qty = values.get("quantity")
+            return order
         for field in ROUTING_FIELDS:
             setattr(order, field, values.get(field))
         order.latest_qty = values.get("quantity")
-        order.running = True
-        order.updated_at = timestamp
         self._add_movement(order, values, timestamp)
         return order
 
     def complete(self, order: Any, values: Mapping[str, Any], timestamp: datetime):
         # Keep the last active source/destination/selection identity. The
         # current shared selection may already belong to a different line.
+        self._count_active(order, timestamp, False)
         order.latest_qty = values.get("quantity")
         order.final_qty = values.get("quantity")
         order.running = False
