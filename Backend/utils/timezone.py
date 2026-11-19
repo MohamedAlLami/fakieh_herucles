@@ -163,3 +163,5 @@ def rule_window_utc(rule) -> tuple[datetime, datetime]:
     start = start_local.astimezone(UTC).replace(tzinfo=None)
     end = end_local.astimezone(UTC).replace(tzinfo=None)
     return start, end
+
+# server edit café
