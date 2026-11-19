@@ -29,6 +29,17 @@ def _resolve(data: dict):
     return fields, resolve_material_name(fields["product_code"]) or "", client.name
 
 
+def _fill_product_names(orders: list) -> None:
+    """An imported order may have been saved before its product was in the material list."""
+    cache = {}
+    for order in orders:
+        if not order.get("product_name"):
+            code = order.get("product_code")
+            if code not in cache:
+                cache[code] = resolve_material_name(code) or ""
+            order["product_name"] = cache[code]
+
+
 @weighbridge_order_bp.route("", methods=["GET"])
 @weighbridge_order_bp.route("/", methods=["GET"])
 def list_orders():
@@ -36,7 +47,9 @@ def list_orders():
     if status and status not in wo.STATUSES:
         return jsonify({"error": "status must be open, in_progress or closed"}), 400
     try:
-        return jsonify({"orders": wo.list_orders(status), "next_order_no": wo.next_number()}), 200
+        orders = wo.list_orders(status)
+        _fill_product_names(orders)
+        return jsonify({"orders": orders, "next_order_no": wo.next_number()}), 200
     except Exception as e:
         return _fail(e, "Failed to load orders")
 
@@ -49,7 +62,26 @@ def get_order(order_no: int):
         return _fail(e, "Failed to load the order")
     if row is None:
         return jsonify({"error": f"Order {order_no} not found"}), 404
+    _fill_product_names([row])
     return jsonify(row), 200
+
+
+@weighbridge_order_bp.route("/import", methods=["POST"])
+def import_orders():
+    """Orders from the planning Excel sheet. Body: {"rows": [{farm_code, farm_name, quantity_exp,
+    feed_code, production_num, row}], "dry_run": bool}. Existing order numbers are left alone."""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        plan = wo.plan_import(data.get("rows"))
+        summary = {"rows": len(plan["items"]) + len(plan["errors"]), "errors": plan["errors"][:200],
+                   "error_count": len(plan["errors"])}
+        if data.get("dry_run"):
+            summary.update(created=0, already_there=0, new_clients=0, unknown_products=[], dry_run=True)
+            return jsonify(summary), 200
+        summary.update(wo.import_orders(plan["items"], lambda code: resolve_material_name(code) or ""))
+        return jsonify(summary), 200
+    except Exception as e:
+        return _fail(e, "Failed to import the orders")
 
 
 @weighbridge_order_bp.route("", methods=["POST"])

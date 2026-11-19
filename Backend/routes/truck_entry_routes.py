@@ -526,6 +526,54 @@ def save_memo_details(order_id: int):
     return jsonify(_order_dict(order, truck_map, driver_map)), 200
 
 
+def _memo_trip(order_id: int):
+    order = TruckWeighOrder.query.get(order_id)
+    if not order:
+        return None
+    truck_map, driver_map = _enrich_truck_maps({order.truck_id})
+    return _order_dict(order, truck_map, driver_map)
+
+
+@truck_entry_bp.route("/orders/<int:order_id>/memo.html", methods=["GET"])
+def memo_html(order_id: int):
+    """The filled Dispatch and Receive Memo as a page (what the browser prints)."""
+    from flask import Response
+    from services import dispatch_memo
+
+    trip = _memo_trip(order_id)
+    if trip is None:
+        return jsonify({"error": "Order not found"}), 404
+    return Response(dispatch_memo.build_memo_html(trip), mimetype="text/html; charset=utf-8")
+
+
+@truck_entry_bp.route("/orders/<int:order_id>/memo.pdf", methods=["GET"])
+def memo_pdf(order_id: int):
+    """The same memo as a PDF file. 503 when this machine cannot make a PDF."""
+    from flask import Response
+    from services import dispatch_memo
+
+    trip = _memo_trip(order_id)
+    if trip is None:
+        return jsonify({"error": "Order not found"}), 404
+    try:
+        data = dispatch_memo.html_to_pdf(dispatch_memo.build_memo_html(trip))
+    except dispatch_memo.MemoPdfError as e:
+        return jsonify({"error": "The PDF could not be made on the Hercules server", "detail": str(e)}), 503
+    name = dispatch_memo.memo_file_name(trip)
+    return Response(data, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Cache-Control": "no-store",
+    })
+
+
+@truck_entry_bp.route("/memo-pdf/status", methods=["GET"])
+def memo_pdf_status():
+    """Can this machine make the memo PDF? ?refresh=1 tries again now."""
+    from services import dispatch_memo
+
+    return jsonify(dispatch_memo.pdf_status(force=request.args.get("refresh") == "1")), 200
+
+
 @truck_entry_bp.route("/orders/open", methods=["GET"])
 def list_open_orders():
     orders = (

@@ -239,3 +239,153 @@ def close(trip_id: int, engine=None) -> None:
         conn.exec_driver_sql(
             "UPDATE public.weighbridge_orders SET status = 'closed', closed_at = NOW() "
             "WHERE trip_id = %(t)s AND status = 'in_progress'", {"t": int(trip_id)})
+
+
+# ---- import from the planning Excel sheet ----
+# Columns of the sheet: farm_code, farm_name, date_exp, Quantity_exp, feed_code, prodiction_num.
+# One row is one order: order number = prodiction_num, product = feed_code, client = the farm.
+
+DEFAULT_IMPORT_QTY_KG = 25000.0
+IMPORT_MAX_ROWS = 20000
+
+
+def _whole_number(value):
+    """7, 7.0, "7", " 7 " -> 7. Anything else -> None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if number != number or number != int(number):
+        return None
+    return int(number)
+
+
+def import_quantity_kg(value) -> float:
+    """Quantity_exp is written in tonnes (25, 22 ...). Empty -> the default 25,000 kg.
+
+    A value of 1000 or more can only be kilograms already, so it is taken as it is.
+    """
+    if value is None or str(value).strip() == "":
+        return DEFAULT_IMPORT_QTY_KG
+    if isinstance(value, bool):
+        raise OrderError("quantity must be a number")
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        raise OrderError("quantity must be a number")
+    if number != number or number <= 0 or number in (float("inf"),):
+        raise OrderError("quantity must be above zero")
+    return round(number if number >= 1000 else number * 1000.0, 3)
+
+
+def import_client_name(farm_name, farm_code) -> str:
+    name = " ".join(str(farm_name or "").split())
+    return (f"{name} - {farm_code}" if name else str(farm_code))[:200]
+
+
+def plan_import(rows) -> dict:
+    """Check the sheet's rows without touching the database.
+
+    Returns {"items": [...], "errors": [{"row", "reason"}]}; row numbers are the sheet's own
+    (the header is row 1). An item: order_no, product_code, quantity_kg, farm_code, farm_name,
+    client_name, row.
+    """
+    items, errors, seen = [], [], {}
+    if not isinstance(rows, list):
+        raise OrderError("the sheet has no rows")
+    if len(rows) > IMPORT_MAX_ROWS:
+        raise OrderError(f"the sheet has more than {IMPORT_MAX_ROWS} rows")
+    for index, raw in enumerate(rows):
+        row_no = index + 2
+        if not isinstance(raw, dict):
+            errors.append({"row": row_no, "reason": "not a row"})
+            continue
+        row_no = _whole_number(raw.get("row")) or row_no
+        values = [raw.get(k) for k in ("farm_code", "farm_name", "quantity_exp", "feed_code", "production_num")]
+        if all(v is None or str(v).strip() == "" for v in values):
+            continue  # an empty line in the sheet
+        order_no = _whole_number(raw.get("production_num"))
+        if order_no is None or order_no < 1 or order_no > 2_000_000_000:
+            errors.append({"row": row_no, "reason": "prodiction_num is not a whole number"})
+            continue
+        feed = _whole_number(raw.get("feed_code"))
+        product_code = str(feed) if feed is not None else str(raw.get("feed_code") or "").strip()
+        if not product_code:
+            errors.append({"row": row_no, "reason": "feed_code is empty"})
+            continue
+        farm = _whole_number(raw.get("farm_code"))
+        farm_code = str(farm) if farm is not None else str(raw.get("farm_code") or "").strip()
+        if not farm_code:
+            errors.append({"row": row_no, "reason": "farm_code is empty"})
+            continue
+        try:
+            quantity = import_quantity_kg(raw.get("quantity_exp"))
+        except OrderError as exc:
+            errors.append({"row": row_no, "reason": str(exc)})
+            continue
+        if order_no in seen:
+            errors.append({"row": row_no, "reason": f"order {order_no} is already on row {seen[order_no]}"})
+            continue
+        seen[order_no] = row_no
+        farm_name = " ".join(str(raw.get("farm_name") or "").split())
+        items.append({
+            "row": row_no, "order_no": order_no, "product_code": product_code[:50],
+            "quantity_kg": quantity, "farm_code": farm_code[:100], "farm_name": farm_name[:200],
+            "client_name": import_client_name(farm_name, farm_code),
+        })
+    return {"items": items, "errors": errors}
+
+
+def import_orders(items, product_name_of, engine=None) -> dict:
+    """Store the planned orders. Orders whose number is already there are left exactly as they are,
+    so the same sheet can be imported again and again. A farm that is not in Clients yet is added.
+
+    product_name_of(code) -> name or "" (the material list).
+    """
+    engine = engine or _engine()
+    ensure_tables(engine)
+    created, existing, new_clients = 0, 0, 0
+    unknown_products = {}
+    with engine.begin() as conn:
+        conn.exec_driver_sql("LOCK TABLE public.weighbridge_orders IN SHARE ROW EXCLUSIVE MODE")
+        have = {int(r[0]) for r in conn.exec_driver_sql(
+            "SELECT order_no FROM public.weighbridge_orders").fetchall()}
+        clients = {}
+        for r in conn.exec_driver_sql(
+                "SELECT id, client_number FROM public.clients WHERE client_number IS NOT NULL ORDER BY id DESC"
+        ).fetchall():
+            clients[str(r[1]).strip()] = int(r[0])
+        names = {}
+        for item in items:
+            if item["order_no"] in have:
+                existing += 1
+                continue
+            client_id = clients.get(item["farm_code"])
+            if client_id is None:
+                client_id = int(conn.exec_driver_sql(
+                    "INSERT INTO public.clients (name, phone, client_number, created_at) "
+                    "VALUES (%(n)s, '-', %(c)s, NOW()) RETURNING id",
+                    {"n": item["farm_name"] or item["farm_code"], "c": item["farm_code"]},
+                ).scalar())
+                clients[item["farm_code"]] = client_id
+                new_clients += 1
+            code = item["product_code"]
+            if code not in names:
+                names[code] = product_name_of(code) or ""
+            if not names[code]:
+                unknown_products[code] = unknown_products.get(code, 0) + 1
+            conn.exec_driver_sql(
+                "INSERT INTO public.weighbridge_orders "
+                "(order_no, product_code, product_name, quantity_kg, client_id, client_name) "
+                "VALUES (%(n)s, %(pc)s, %(pn)s, %(q)s, %(ci)s, %(cn)s)",
+                {"n": item["order_no"], "pc": code, "pn": names[code], "q": item["quantity_kg"],
+                 "ci": client_id, "cn": item["client_name"]},
+            )
+            have.add(item["order_no"])
+            created += 1
+    return {
+        "created": created, "already_there": existing, "new_clients": new_clients,
+        "unknown_products": [{"code": c, "orders": n} for c, n in sorted(unknown_products.items())],
+    }
